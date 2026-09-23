@@ -2,10 +2,14 @@
 
 A bug bounty reconnaissance framework where scope is a boundary, not a filter.
 
-You give it a programme's scope. It enumerates, resolves, probes, crawls, finds
-parameters, reads the JavaScript, checks for takeovers and scans — and every
-single connection any tool makes is re-checked against your scope rules at the
-socket before it leaves the machine.
+You give it a programme's scope. It enumerates, resolves, probes, photographs
+every distinct application it finds, crawls, finds parameters, reads the
+JavaScript, checks for takeovers and scans — and every single connection any
+tool makes is re-checked against your scope rules at the socket before it leaves
+the machine.
+
+The work is laid out as five numbered steps, from fixing the boundary to
+testing, so it reads as a workflow rather than a wall of switches.
 
 ```
 git clone https://github.com/LukeDInfosec/BugBounties.git
@@ -130,7 +134,20 @@ Out-of-scope rules always win. There is no include that overrides an exclude.
 
 Set your **handle** here. It becomes the identification header on every request
 the framework makes, which is what most programmes ask for and what stops a
-blue team treating your testing as an intrusion.
+blue team treating your testing as an intrusion. With a handle of `envy93` on
+HackerOne every request carries:
+
+```
+X-Bug-Bounty: envy93
+X-Bug-Bounty-Researcher: envy93
+X-HackerOne: envy93
+```
+
+The platform header follows the programme's platform (`X-HackerOne`,
+`X-Bugcrowd`, `X-Intigriti`, `X-YesWeHack`), and you can add any further header
+of your own — some programmes ask for a specific one. Headers are set per
+programme and shown back to you on the pre-flight screen before anything is
+sent.
 
 Then use **Check a host against the scope** before you run anything. Paste in
 the hosts you are unsure about; it shows exactly the decision the gate will
@@ -139,7 +156,22 @@ you have typed wrong.
 
 ### 2. Run
 
-Four profiles:
+The chain is presented as five numbered steps, each one feeding the next, so it
+is always clear what has happened and what comes next:
+
+| Step | What it does | Stages |
+|---|---|---|
+| **1 — Scope** | Fix the boundary before anything is sent. | scope and seeds |
+| **2 — Discover** | Find every name that belongs to the target, decide which zones answer for anything, resolve what is real. | subdomains, permutations, wildcard verdict, DNS resolution |
+| **3 — See what is alive** | Probe for HTTP, collapse hosts serving the same application, photograph what is left. | httpx probing, dedupe, screenshots, ports |
+| **4 — Explore the surface** | Crawl and mine archives for URLs, work out which parameters matter, read the JavaScript. | URLs, parameters, JavaScript |
+| **5 — Test** | Takeover triage and template scanning. Injection testing only if you turned it on. | takeovers, nuclei, fuzzing, XSS |
+
+Each step shows its stages as chips with the count each produced, turns green
+as it completes, and has its own **Run this step** button — so when you change
+one thing you redo that part rather than the whole chain.
+
+Four profiles decide which stages are in the chain to begin with:
 
 | Profile | What it does |
 |---|---|
@@ -159,6 +191,20 @@ are found, and the log. Every stage records the exact command it ran, so when a
 result looks wrong you can see what produced it and reproduce it by hand.
 
 ### 3. Results
+
+**Gallery** is the fastest way to triage a large scope. Once httpx has confirmed
+which hosts are alive and identical responses have been collapsed, every
+distinct application is photographed and shown as a card with its URL, page
+title, status code and server. Clicking a card opens that URL in a new tab. You
+are looking at pictures of the estate rather than a list of four thousand
+hostnames, so the login portal nobody remembers deploying stands out
+immediately.
+
+Capture uses whichever of `httpx -screenshot`, `gowitness` or headless Chrome is
+present, in that order, all of them driven through the scope gate so a redirect
+cannot walk the browser out of scope. `screenshot_cap` (default 300) bounds how
+many are taken; `chrome_binary` in Settings points at a Chrome or Chromium
+binary if it is somewhere the framework does not look by default.
 
 **Findings** group by a fingerprint built from the template, host, normalised
 path and matcher — deliberately not the response body or a timestamp. Dismiss
@@ -255,8 +301,8 @@ install.sh       Kali toolchain installer
 ```
 
 Data lives in `~/.local/share/bbhunter/` — one SQLite file per installation
-plus the per-run working directories. Copy it and you have the whole
-engagement.
+plus the per-run working directories, screenshots included. Copy it and you have
+the whole engagement.
 
 ---
 
@@ -267,7 +313,11 @@ python3 selftest.py          # full: imports, scope, gate, a live run
 python3 selftest.py --quick  # skip the live run
 python3 tests/test_scope.py  # 70 scope cases
 python3 tests/test_proxy.py  # the gate, under real sockets
+python3 tests/test_store_runner.py
 ```
+
+The full selftest is **56 checks**, including one screenshot genuinely captured
+through the gate and served back to the gallery.
 
 `selftest.py` stands up a small site on this machine, runs the whole chain
 against it, and checks the traffic arrived with your header on it. Run it after

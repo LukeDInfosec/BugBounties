@@ -238,6 +238,15 @@ async def main(quick=False):
                 "user_agent": "bbhunter-selftest",
                 "stage_timeout": 120}
 
+    settings["screenshot_cap"] = 10
+    # Point the fallback at whatever browser this machine has, so the path
+    # that a bare Kali box would take is actually exercised here.
+    import glob as _glob
+    for candidate in (_glob.glob("/opt/pw-browsers/chromium-*/chrome-linux/chrome")
+                      + _glob.glob("/opt/pw-browsers/chromium_headless_shell-*/"
+                                   "chrome-linux/headless_shell")):
+        settings["chrome_binary"] = candidate
+        break
     pre = engine.preflight(program, "standard", [], settings)
     check("preflight lists the stages", len(pre["stages"]) > 4)
     check("preflight shows the identification header",
@@ -309,6 +318,42 @@ async def main(quick=False):
     print(f"  {DIM}assets: {kinds}{RESET}")
     check("the probe stage found the live service",
           kinds.get("http_service", 0) >= 1, True, fatal=False)
+
+    section("Screenshots and the gallery")
+    shots = [s for s in stages if s["key"] == "screenshots"]
+    check("the screenshot stage ran", len(shots), 1)
+    if shots:
+        captured = shots[0]["produced"]
+        if shots[0]["status"] == "skipped":
+            check(f"screenshots skipped: {shots[0]['message']}", False, True, fatal=False)
+        else:
+            check("at least one screenshot was captured", captured >= 1)
+            gallery = store.assets(program["id"], "screenshot", limit=50)
+            check("the gallery has an entry", len(gallery) >= 1)
+            if gallery:
+                data = gallery[0].get("data") or {}
+                check("the entry names an image file", bool(data.get("image")))
+                image_path = (Path(workdir) / "runs"
+                              / f"{program['id']}-{run_id}" / "screenshots"
+                              / str(data.get("image")))
+                check("the image exists on disk", image_path.is_file())
+                if image_path.is_file():
+                    check("the image is a real PNG",
+                          image_path.read_bytes()[:4] == b"\x89PNG")
+                    check("the image is not empty",
+                          image_path.stat().st_size > 1000)
+
+    section("Gallery and per-step API")
+    from fastapi.testclient import TestClient
+    os.environ["BBHUNTER_HOME"] = workdir
+    client = TestClient(create_app())
+    meta = client.get("/api/meta").json()
+    check("meta exposes the numbered phases", len(meta.get("phases") or []), 5)
+    check("phase one is scope", meta["phases"][0]["key"], "scope")
+    check("screenshots belong to step 3",
+          meta["stages"]["screenshots"]["phase"], "alive")
+    check("the standard profile includes screenshots",
+          "screenshots" in meta["presets"]["standard"]["stages"])
 
     section("The gate holds during a real run")
     scope_live = Scope.from_lines(include_text="127.0.0.1", allow_private=True)
