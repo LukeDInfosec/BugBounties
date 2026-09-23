@@ -43,6 +43,52 @@ async def _git(*args, cwd=None):
     return proc.returncode, (out or b"").decode("utf-8", "replace").strip()
 
 
+async def _latest_from_git():
+    """The published VERSION, read through the checkout's own remote.
+
+    Returns (version, error). This is the path that works for a private
+    repository: whatever credentials `git pull` uses, this uses."""
+    code, out = await _git("fetch", "--quiet", "--tags", "origin", "main")
+    if code != 0:
+        return None, out or "git fetch failed"
+    code, out = await _git("show", "origin/main:VERSION")
+    if code == 0 and out.strip():
+        return out.strip().splitlines()[0].strip(), ""
+    return None, out or "origin/main has no VERSION file"
+
+
+async def _latest_from_raw():
+    """The published VERSION over anonymous HTTPS. Public repositories only."""
+    def _fetch():
+        req = urllib.request.Request(
+            RAW_VERSION, headers={"User-Agent": "bbhunter-updater"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.read().decode().strip()
+    try:
+        return await asyncio.get_running_loop().run_in_executor(None, _fetch), ""
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _lookup_failed(git_err, http_err):
+    """Say which of the two ways failed, and what to do about it."""
+    private = "404" in (http_err or "")
+    lines = ["Could not work out the published version."]
+    if private:
+        lines.append(
+            f"github.com/{REPO} answers 404 to an anonymous request, which "
+            f"normally means the repository is private — that is fine, but it "
+            f"means the version can only be read through your own git remote.")
+    lines.append(f"git said: {(git_err or 'nothing').strip()[:300]}")
+    lines.append(f"https said: {(http_err or 'nothing').strip()[:200]}")
+    lines.append(
+        "Check that the remote works from a terminal:  git -C "
+        f"{install_root()} fetch origin main   — if that asks for a password, "
+        "set the remote to SSH or run `gh auth login`. `git pull` still "
+        "updates you either way.")
+    return "\n\n".join(lines)
+
+
 async def check() -> dict:
     """Is there a newer version? Never changes anything."""
     from .config import version as local_version
@@ -78,16 +124,21 @@ async def check() -> dict:
                            "would overwrite them, so it is blocked. Commit or "
                            "stash them first.\n\n" + out[:600])
 
-    try:
-        def _fetch():
-            req = urllib.request.Request(
-                RAW_VERSION, headers={"User-Agent": "bbhunter-updater"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return resp.read().decode().strip()
-        info["latest"] = await asyncio.get_running_loop().run_in_executor(None, _fetch)
-    except Exception as exc:
-        info["message"] = info["message"] or f"Could not reach GitHub: {exc}"
-        return info
+    # Ask git first. It uses the checkout's own remote and credentials, so a
+    # private repository over SSH works exactly as a public one does. The
+    # anonymous raw.githubusercontent.com URL is only a fallback, and for a
+    # private repository it answers 404 — which is what "Could not reach
+    # GitHub: 404" used to mean, unhelpfully.
+    latest, git_err = await _latest_from_git()
+    if latest:
+        info["latest"] = latest
+    else:
+        latest, http_err = await _latest_from_raw()
+        if latest:
+            info["latest"] = latest
+        else:
+            info["message"] = info["message"] or _lookup_failed(git_err, http_err)
+            return info
 
     info["update_available"] = bool(
         info["latest"] and info["latest"] != current and not info["dirty"])
