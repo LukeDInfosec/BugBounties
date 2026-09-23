@@ -93,6 +93,64 @@ def main():
         check("and the message explains why",
               "local changes" in (info["message"] or ""))
 
+        print("\n\033[1mReading the published version when GitHub is "
+              "unreachable anonymously\033[0m")
+        # A private repository answers 404 to raw.githubusercontent.com. Point
+        # the HTTPS fallback at something that cannot work, so the only way to
+        # learn the published version is through the checkout's own remote —
+        # which is exactly the situation a private repo puts you in.
+        updater.RAW_VERSION = "http://127.0.0.1:1/VERSION"
+        git("checkout", "-q", "main", cwd=work)
+        (work / "bbf").write_text("#!/usr/bin/env bash\necho hi\n")   # undo the edit
+        seed = Path(tmp) / "seed"
+        (seed / "VERSION").write_text("0.9.9\n")
+        git("add", "-A", cwd=seed)
+        git("-c", "core.fileMode=false", "commit", "-m", "bump", cwd=seed)
+        git("push", "origin", "main", cwd=seed)
+
+        info = asyncio.run(updater.check())
+        check("the published version comes from git", info["latest"], "0.9.9")
+        check("an update is offered", info["update_available"])
+        check("no 'could not reach GitHub'",
+              "Could not" in (info["message"] or ""), False)
+
+        print("\n\033[1mWhen neither way works\033[0m")
+        git("remote", "set-url", "origin", str(Path(tmp) / "gone"), cwd=work)
+        info = asyncio.run(updater.check())
+        check("it does not claim an update", info["update_available"], False)
+        check("it names both ways it tried",
+              "git said" in (info["message"] or "")
+              and "https said" in (info["message"] or ""))
+        check("and gives a command to test the remote",
+              "git -C" in (info["message"] or ""))
+
+        print("\n\033[1mA 404 over HTTPS is read as 'probably private'\033[0m")
+        # This is the case Luke hit: the repo is private, so anonymous HTTPS
+        # answers 404. That must not be reported as "could not reach GitHub".
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+
+        class NotFound(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), NotFound)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        updater.RAW_VERSION = f"http://127.0.0.1:{srv.server_address[1]}/VERSION"
+        info = asyncio.run(updater.check())
+        srv.shutdown()
+        check("it says the repository may be private",
+              "private" in (info["message"] or "").lower())
+        check("it does not say 'could not reach GitHub'",
+              "Could not reach GitHub" in (info["message"] or ""), False)
+
         print("\n\033[1mA copy that is not a checkout at all\033[0m")
         plain = Path(tmp) / "zip"
         plain.mkdir()
