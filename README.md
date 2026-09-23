@@ -109,6 +109,13 @@ Everything else degrades gracefully.
 ./bbf --scope-check Acme api.acme.com      # one decision, from the terminal
 ```
 
+The port is resolved before anything is printed, so the banner never shows a
+URL that was never going to work. If 8777 is already taken by another copy of
+bbhunter you are told it is already running and given that URL; if something
+else has it, the next free port is used and said so. An explicit `--port` is
+never silently moved — if it is taken, nothing starts and you are shown how to
+find out what holds it.
+
 The launcher adds `$HOME/go/bin`, `$HOME/.pdtm/go/bin` and `$HOME/.local/bin`
 to `PATH`, because a fresh Kali shell has none of them and `subfinder: not
 found` immediately after a successful install is the usual first confusion.
@@ -262,6 +269,30 @@ results.
 git -C BugBounties pull    # the same thing from the terminal
 ```
 
+A permission bit is not a local modification: the install instructions tell you
+to `chmod +x bbf install.sh`, so the updater runs git with
+`core.fileMode=false` and those two files never block an update. A changed line
+still does.
+
+### If you downloaded a zip instead of cloning
+
+The Update page will say so. You do not have to download anything again — turn
+the folder you already have into a checkout in place:
+
+```bash
+cd /path/to/BugBounties
+git init
+git remote add origin https://github.com/LukeDInfosec/BugBounties.git
+git fetch origin
+git reset --hard origin/main            # discards local edits to tracked files
+git branch --set-upstream-to=origin/main main
+```
+
+Your database, settings and results are in `~/.local/share/bbhunter/`, outside
+the checkout, so none of that is touched. If the repository is private, GitHub
+will not accept a password over HTTPS — clone over SSH, or run `gh auth login`
+first.
+
 ---
 
 ## Being a good citizen
@@ -338,6 +369,7 @@ python3 selftest.py --quick  # skip the live run
 python3 tests/test_scope.py  # 70 scope cases
 python3 tests/test_proxy.py  # the gate, under real sockets
 python3 tests/test_store_runner.py
+python3 tests/test_updater.py  # what counts as a local change
 ```
 
 The full selftest is **56 checks**, including one screenshot genuinely captured
