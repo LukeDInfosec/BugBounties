@@ -69,7 +69,8 @@ PRESETS = {
                   "takeovers, and run nuclei at medium and above. No injection "
                   "payloads are sent."),
         "stages": ["seeds", "subdomains", "wildcard", "resolve", "probe",
-                   "dedupe", "urls", "params", "js", "takeover", "nuclei"],
+                   "dedupe", "screenshots", "urls", "params", "js",
+                   "takeover", "nuclei"],
         "active": False,
     },
     "deep": {
@@ -78,8 +79,8 @@ PRESETS = {
                   "port scanning, headless crawling and screenshots. Slower "
                   "and noisier; still sends no injection payloads."),
         "stages": ["seeds", "subdomains", "permute", "wildcard", "resolve",
-                   "probe", "dedupe", "ports", "urls", "params", "js",
-                   "takeover", "nuclei", "screenshots"],
+                   "probe", "dedupe", "screenshots", "ports", "urls", "params",
+                   "js", "takeover", "nuclei"],
         "active": False,
     },
     "monitor": {
@@ -105,6 +106,50 @@ ACTIVE_STAGES = {
                         "Requests the dangling host to read the provider's "
                         "error page."),
 }
+
+
+#: The chain, grouped into the phases a tester actually thinks in. The
+#: interface presents these as numbered steps; the engine still runs stages.
+#: Keeping the grouping here rather than in the front end means the two can
+#: never disagree about what belongs where.
+PHASES = [
+    {
+        "key": "scope", "number": 1, "label": "Scope",
+        "blurb": "Fix the boundary before anything is sent.",
+        "stages": ["seeds"],
+    },
+    {
+        "key": "discover", "number": 2, "label": "Discover",
+        "blurb": ("Find every name that belongs to the target, decide which "
+                  "zones answer for anything, and resolve what is real."),
+        "stages": ["subdomains", "permute", "wildcard", "resolve"],
+    },
+    {
+        "key": "alive", "number": 3, "label": "See what is alive",
+        "blurb": ("Probe for HTTP, collapse the hosts that serve the same "
+                  "application, and photograph what is left."),
+        "stages": ["probe", "dedupe", "screenshots", "ports"],
+    },
+    {
+        "key": "explore", "number": 4, "label": "Explore the surface",
+        "blurb": ("Crawl and mine archives for URLs, work out which "
+                  "parameters matter, and read the JavaScript."),
+        "stages": ["urls", "params", "js"],
+    },
+    {
+        "key": "test", "number": 5, "label": "Test",
+        "blurb": ("Takeover triage and template scanning. Injection testing "
+                  "only if you have turned it on."),
+        "stages": ["takeover", "nuclei", "dast", "xss"],
+    },
+]
+
+
+def phase_for(stage_key: str) -> str:
+    for phase in PHASES:
+        if stage_key in phase["stages"]:
+            return phase["key"]
+    return "test"
 
 
 @dataclass
@@ -1328,33 +1373,182 @@ class XssStage(Stage):
 
 class ScreenshotStage(Stage):
     key, name, tool_key = "screenshots", "Screenshots", "httpx"
-    description = "Capture the distinct applications, not every duplicate of them."
+    description = ("Capture what each distinct application actually looks like, "
+                   "so you can pick the interesting ones by eye.")
+
+    #: Three ways to get a picture, in order of preference. httpx is already
+    #: in the pipeline; gowitness is what most people have; headless Chrome is
+    #: the fallback that works on a bare Kali box with nothing else installed.
+    CHROME_BINARIES = ("chromium", "chromium-browser", "google-chrome",
+                       "google-chrome-stable", "chrome")
 
     async def run(self, ctx):
         source = ctx.workdir / "distinct.txt"
         if not source.exists():
-            return {"produced": 0, "skipped": "run deduplication first"}
+            source = ctx.workdir / "live.txt"
+        if not source.exists():
+            return {"produced": 0, "skipped": "nothing probed yet"}
+
         targets = ctx.scope.filter_allowed(
             [l.strip() for l in source.read_text().splitlines() if l.strip()])
         if not targets:
-            return {"produced": 0, "skipped": "nothing to capture"}
-        if not ctx.registry.have("httpx"):
-            return {"produced": 0, "skipped": "httpx is not installed"}
+            return {"produced": 0, "skipped": "nothing in scope to capture"}
+
+        cap = int(ctx.config.get("screenshot_cap", 300))
+        if len(targets) > cap:
+            ctx.log(f"capturing the first {cap} of {len(targets)} distinct "
+                    f"applications — raise screenshot_cap for more", "warn")
+            targets = targets[:cap]
 
         shots = ctx.workdir / "screenshots"
         shots.mkdir(exist_ok=True)
+
+        if ctx.registry.have("httpx"):
+            result = await self._httpx(ctx, targets, shots)
+        elif ctx.registry.have("gowitness"):
+            result = await self._gowitness(ctx, targets, shots)
+        else:
+            chrome = self._find_chrome(ctx.config.get("chrome_binary", ""))
+            if not chrome:
+                return {"produced": 0,
+                        "skipped": ("no screenshot backend — install httpx, "
+                                    "gowitness or chromium, or set "
+                                    "chrome_binary in settings to a browser "
+                                    "you already have")}
+            ctx.log(f"using headless {Path(chrome).name} directly; httpx or "
+                    f"gowitness would be faster", "warn")
+            result = await self._chrome(ctx, targets, shots, chrome)
+
+        captured = self._index(ctx, targets, shots)
+        ctx.counter("screenshots", len(captured))
+        ctx.log(f"{len(captured)} screenshot(s) captured. Only the distinct "
+                f"applications were shot — screenshotting every duplicate of a "
+                f"404 page is the usual way a run stops finishing.")
+        return {"produced": len(captured), "command": result}
+
+    # ── backends ──────────────────────────────────────────────────────────
+
+    @classmethod
+    def _find_chrome(cls, configured=""):
+        """Locate a browser. A configured path wins.
+
+        Worth being explicit about: Kali usually has ``chromium``, but people
+        run Chrome from a snap, a flatpak or an unpacked tarball, and hunting
+        for it is not the operator's job when they can just say where it is.
+        """
+        import shutil as _shutil
+        if configured:
+            candidate = Path(configured).expanduser()
+            if candidate.is_file():
+                return str(candidate)
+        for name in cls.CHROME_BINARIES:
+            path = _shutil.which(name)
+            if path:
+                return path
+        return ""
+
+    async def _httpx(self, ctx, targets, shots):
         target_file = ctx.write_list("screenshot_targets.txt", targets)
         argv = [ctx.registry.path("httpx"), "-l", str(target_file),
                 "-ss", "-esb", "-ehb", "-silent", "-json",
-                "-srd", str(shots), "-t", "10", "-timeout", "20"]
+                "-srd", str(shots), "-t", "8", "-timeout", "20"]
         argv += ctx.identification("httpx")
-        result = await ctx.runner(ctx.workdir / "logs" / "screenshots.log", "httpx").run(
+        result = await ctx.runner(ctx.workdir / "logs" / "screenshots.log",
+                                  "httpx").run(
             argv, timeout=ctx.config.get("stage_timeout", 2400), idle_timeout=420)
-        captured = len(list(shots.rglob("*.png")))
-        ctx.counter("screenshots", captured)
-        ctx.log(f"{captured} screenshot(s) — only the distinct applications were "
-                f"captured, which is why this finished")
-        return {"produced": captured, "command": result.command}
+        return result.command
+
+    async def _gowitness(self, ctx, targets, shots):
+        target_file = ctx.write_list("screenshot_targets.txt", targets)
+        # v3 restructured the CLI; the old `gowitness file -f` form is gone.
+        argv = [ctx.registry.path("gowitness"), "scan", "file",
+                "-f", str(target_file), "--screenshot-path", str(shots),
+                "--write-jsonl", "--disable-db", "-t", "8"]
+        result = await ctx.runner(ctx.workdir / "logs" / "screenshots.log",
+                                  "gowitness").run(
+            argv, timeout=ctx.config.get("stage_timeout", 2400), idle_timeout=420)
+        return result.command
+
+    async def _chrome(self, ctx, targets, shots, chrome):
+        """Headless Chrome, one page at a time, through the scope proxy.
+
+        Slow, but it means a fresh clone with nothing installed still produces
+        a gallery, and Chrome honours --proxy-server so the scope gate still
+        applies to everything the page loads.
+        """
+        semaphore = asyncio.Semaphore(int(ctx.config.get("screenshot_workers", 4)))
+        command = ""
+
+        async def one(url):
+            nonlocal command
+            async with semaphore:
+                out = shots / (hashlib.sha256(url.encode()).hexdigest()[:16] + ".png")
+                argv = [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+                        "--hide-scrollbars", "--disable-dev-shm-usage",
+                        "--virtual-time-budget=6000",
+                        "--window-size=1280,800",
+                        f"--screenshot={out}"]
+                if ctx.proxy:
+                    argv.append(f"--proxy-server={ctx.proxy.url}")
+                for name, value in (ctx.config.get("headers") or {}).items():
+                    # Chrome has no per-header flag; the proxy stamps these on
+                    # plain HTTP and this is recorded so the gap is visible.
+                    break
+                argv.append(url)
+                result = await ctx.runner(None, "chromium").run(
+                    argv, timeout=60, idle_timeout=45, capture_stdout=False)
+                command = command or result.command
+
+        await asyncio.gather(*[one(u) for u in targets], return_exceptions=True)
+        return command
+
+    # ── index ─────────────────────────────────────────────────────────────
+
+    def _index(self, ctx, targets, shots):
+        """Match each image to the URL it belongs to and record it.
+
+        The backends name files differently — httpx uses a sanitised URL,
+        gowitness uses its own scheme, the Chrome fallback uses a hash — so
+        matching is done by trying each in turn rather than assuming one.
+        """
+        images = sorted(shots.rglob("*.png"))
+        by_name = {p.stem: p for p in images}
+        captured = []
+
+        services = {a["key"]: a for a in
+                    ctx.store.assets(ctx.program_id, "http_service", limit=100000)}
+
+        for url in targets:
+            path = by_name.get(hashlib.sha256(url.encode()).hexdigest()[:16])
+            if path is None:
+                stem = re.sub(r"[^A-Za-z0-9]+", "_", url).strip("_")
+                path = by_name.get(stem)
+            if path is None:
+                # httpx sanitises differently across versions; fall back to a
+                # containment match on the host.
+                host = urlsplit(url).netloc.replace(":", "_")
+                for name, candidate in by_name.items():
+                    if host and host.replace(".", "_") in name:
+                        path = candidate
+                        break
+            if path is None or not path.exists():
+                continue
+
+            data = (services.get(url, {}).get("data") or {})
+            captured.append(url)
+            ctx.store.upsert_assets(ctx.program_id, ctx.run_id, "screenshot", [{
+                "key": url, "decision": "allow", "source": "screenshot",
+                "data": {
+                    "image": path.name,
+                    "run_id": ctx.run_id,
+                    "status": data.get("status"),
+                    "title": data.get("title", ""),
+                    "tech": data.get("tech", []),
+                    "server": data.get("server", ""),
+                    "bytes": path.stat().st_size,
+                },
+            }])
+        return captured
 
 
 STAGES = {s.key: s for s in [

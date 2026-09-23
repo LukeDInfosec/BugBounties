@@ -46,7 +46,8 @@ DEFAULTS = {
     "per_host_concurrency": 10,
     "user_agent": "",
     "headers": {},
-    "handle": "",
+    "handle": "envy93",
+    "platform": "hackerone",
     "nuclei_severity": "critical,high,medium,low",
     "exclude_intrusive": True,
     "crawl_depth": 3,
@@ -56,6 +57,9 @@ DEFAULTS = {
     "dast_url_cap": 2000,
     "xss_url_cap": 500,
     "permutation_limit": 100000,
+    "screenshot_cap": 300,
+    "screenshot_workers": 4,
+    "chrome_binary": "",
     "api_keys": {},
     "theme": "dark",
 }
@@ -79,7 +83,19 @@ def save_config(config: dict):
     return merged
 
 
-def identification_headers(handle: str, extra: dict = None) -> dict:
+#: The header each platform's programmes most commonly ask for, alongside the
+#: generic one. Sending both costs nothing and means you are identifiable
+#: whichever convention the programme's triage team greps for.
+PLATFORM_HEADERS = {
+    "hackerone": "X-HackerOne",
+    "bugcrowd": "X-Bugcrowd",
+    "intigriti": "X-Intigriti",
+    "yeswehack": "X-YesWeHack",
+}
+
+
+def identification_headers(handle: str, extra: dict = None,
+                           platform: str = "") -> dict:
     """The headers that tell a target who is scanning them.
 
     Most programmes ask for this and several require it. It costs nothing and
@@ -91,5 +107,8 @@ def identification_headers(handle: str, extra: dict = None) -> dict:
     if handle:
         headers["X-Bug-Bounty"] = handle
         headers["X-Bug-Bounty-Researcher"] = handle
+        platform_header = PLATFORM_HEADERS.get((platform or "").lower())
+        if platform_header:
+            headers[platform_header] = handle
     headers.update({k: v for k, v in (extra or {}).items() if k and v})
     return headers

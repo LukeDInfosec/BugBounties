@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from . import config as cfg
 from . import updater
 from .engine import ScanEngine, _scope_from_program
-from .pipeline import PRESETS, STAGES, ACTIVE_STAGES
+from .pipeline import PRESETS, STAGES, ACTIVE_STAGES, PHASES, phase_for
 from .scope import Scope
 from .store import Store
 
@@ -50,6 +50,8 @@ class RunIn(BaseModel):
     active_stages: list = []
     acknowledge_active: bool = False
     overrides: dict = {}
+    #: When set, only these stages run. Used by "re-run just this step".
+    only_stages: list = []
 
 
 class TriageIn(BaseModel):
@@ -89,7 +91,9 @@ def create_app():
             "active_stages": {k: {"label": v[0], "warning": v[1]}
                               for k, v in ACTIVE_STAGES.items()},
             "stages": {k: {"name": s.name, "description": s.description,
-                           "tool": s.tool_key} for k, s in STAGES.items()},
+                           "tool": s.tool_key, "phase": phase_for(k)}
+                       for k, s in STAGES.items()},
+            "phases": PHASES,
             "settings": {k: v for k, v in settings.items() if k != "api_keys"},
             "data_dir": str(cfg.data_dir()),
         }
@@ -142,7 +146,8 @@ def create_app():
             "bare_includes_children": payload.bare_includes_children,
             "max_distance": payload.max_distance,
         }
-        headers = cfg.identification_headers(payload.handle, payload.headers)
+        headers = cfg.identification_headers(payload.handle, payload.headers,
+                                             payload.platform)
         policy = {"per_host_rps": payload.per_host_rps,
                   "global_rps": payload.global_rps,
                   "headers": headers}
@@ -203,7 +208,8 @@ def create_app():
         policy = json.loads(program.get("policy_json") or "{}")
         run_config = {**settings, **policy, **(payload.overrides or {})}
         run_id = await engine.start(program, payload.preset,
-                                    payload.active_stages, run_config)
+                                    payload.active_stages, run_config,
+                                    only_stages=payload.only_stages or None)
         return {"run_id": run_id}
 
     @app.get("/api/runs/status")
@@ -278,6 +284,51 @@ def create_app():
         out.write_text(json.dumps(payload, indent=2, default=str))
         return FileResponse(str(out), filename=f"{program['name']}-export.json",
                             media_type="application/json")
+
+    # ── screenshots ───────────────────────────────────────────────────────
+
+    @app.get("/api/programs/{program_id}/gallery")
+    async def gallery(program_id: int, search: str = "", limit: int = 400):
+        """The captured applications, newest run first.
+
+        Deduplicated on the way out: if the same URL was captured in several
+        runs, only the most recent image is listed, because a gallery of the
+        same page four times is not a gallery.
+        """
+        rows = store.assets(program_id, "screenshot", search=search,
+                            limit=limit, order="recent")
+        items = []
+        for row in rows:
+            data = row.get("data") or {}
+            if not data.get("image"):
+                continue
+            items.append({
+                "url": row["key"],
+                "title": data.get("title") or "",
+                "status": data.get("status"),
+                "tech": data.get("tech") or [],
+                "server": data.get("server") or "",
+                "image": f"/api/programs/{program_id}/shot/"
+                         f"{data.get('run_id')}/{data.get('image')}",
+                "last_seen": row.get("last_seen_at"),
+            })
+        return {"items": items, "total": store.count_assets(program_id, "screenshot")}
+
+    @app.get("/api/programs/{program_id}/shot/{run_id}/{name}")
+    async def shot(program_id: int, run_id: int, name: str):
+        # The name comes from our own index, but it still arrives over HTTP,
+        # so it is resolved and confined to the run's screenshot directory
+        # rather than trusted.
+        base = (cfg.data_dir() / "runs" / f"{program_id}-{run_id}"
+                / "screenshots").resolve()
+        try:
+            path = (base / name).resolve()
+            path.relative_to(base)
+        except (ValueError, OSError):
+            raise HTTPException(400, "bad path")
+        if not path.is_file():
+            raise HTTPException(404, "no such screenshot")
+        return FileResponse(str(path), media_type="image/png")
 
     # ── updates ───────────────────────────────────────────────────────────
 

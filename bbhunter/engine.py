@@ -9,7 +9,8 @@ import time
 import traceback
 from pathlib import Path
 
-from .pipeline import STAGES, PRESETS, StageContext, resolve_stage_list
+from .pipeline import (STAGES, PRESETS, PHASES, StageContext,
+                       resolve_stage_list, phase_for)
 from .proxy import ScopeProxy, RatePolicy
 from .scope import Scope
 from .tools import ToolRegistry
@@ -161,13 +162,25 @@ class ScanEngine:
 
     # ── running ───────────────────────────────────────────────────────────
 
-    async def start(self, program, preset, active_stages, config, resume=True):
+    async def start(self, program, preset, active_stages, config, resume=True,
+                    only_stages=None):
+        """Run a preset, or — when ``only_stages`` is given — just those steps.
+
+        Running one phase at a time is how the interface offers "re-run just
+        this step". It matters because recon is iterative: you add three
+        subdomains by hand and want probing redone, not the whole chain.
+        """
         if self.current:
             raise RuntimeError("a scan is already running")
 
         scope = _scope_from_program(program)
-        stage_keys = [k for k in resolve_stage_list(preset, active_stages)
-                      if k in STAGES]
+        if only_stages:
+            stage_keys = [k for k in only_stages if k in STAGES]
+        else:
+            stage_keys = [k for k in resolve_stage_list(preset, active_stages)
+                          if k in STAGES]
+        if not stage_keys:
+            raise RuntimeError("no runnable stages were selected")
 
         run_id = self.store.create_run(program["id"], preset,
                                        scope.fingerprint(),
@@ -180,7 +193,10 @@ class ScanEngine:
             "program": program["name"], "preset": preset,
             "stages": stage_keys, "started_at": time.time(),
             "stage_states": {k: "pending" for k in stage_keys},
+            "stage_names": {k: STAGES[k].name for k in stage_keys},
+            "phases": {k: phase_for(k) for k in stage_keys},
             "counters": {}, "current_stage": None,
+            "partial": bool(only_stages),
         }
         self._task = asyncio.create_task(
             self._run(program, scope, stage_keys, config, run_id, workdir, resume))
@@ -211,7 +227,8 @@ class ScanEngine:
         await self._proxy.start()
         self.bus.publish("run_started", {
             "run_id": run_id, "program": program["name"],
-            "stages": [{"key": k, "name": STAGES[k].name} for k in stage_keys],
+            "stages": [{"key": k, "name": STAGES[k].name,
+                        "phase": phase_for(k)} for k in stage_keys],
             "proxy_port": self._proxy.port,
         })
         self.bus.publish("log", {
@@ -233,6 +250,7 @@ class ScanEngine:
                 self.current["current_stage"] = key
                 self.current["stage_states"][key] = "running"
                 self.bus.publish("stage", {"key": key, "name": stage.name,
+                                           "phase": phase_for(key),
                                            "status": "running"})
                 self.store.update_stage(stage_id, status="running",
                                         started_at=time.time())
