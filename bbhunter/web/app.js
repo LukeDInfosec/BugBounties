@@ -72,6 +72,7 @@ async function boot() {
   $("version").textContent = "v" + S.meta.version;
   $("railfoot").innerHTML =
     `Bound to localhost only.<br><span class="mono" style="font-size:10.5px">${esc(S.meta.data_dir)}</span>`;
+  renderThemes();
   renderPresets();
   renderActiveStages();
   renderPhases();
@@ -80,6 +81,64 @@ async function boot() {
   await loadTools();
   connect();
   show("scope");
+}
+
+
+/* ── themes ─────────────────────────────────────────────────────────────────
+   Fifteen palettes, eight dark and seven light. A theme only sets CSS custom
+   properties on <html data-theme>, so nothing here has to know what the rest
+   of the interface looks like. The choice is remembered in this browser; the
+   same early-apply snippet lives in the page head so a reload never flashes
+   the previous theme. */
+const THEMES = [
+  { group: "Dark", items: [
+    ["midnight",  "Midnight",   "Blue-slate on near-black. The default."],
+    ["carbon",    "Carbon",     "Neutral graphite with an amber accent."],
+    ["abyss",     "Abyss",      "Deep navy with cyan."],
+    ["nocturne",  "Nocturne",   "Near-black violet."],
+    ["evergreen", "Evergreen",  "Dark green, easy at length."],
+    ["ember",     "Ember",      "Warm charcoal and orange."],
+    ["terminal",  "Terminal",   "True black and phosphor green. Highest contrast."],
+    ["nordic",    "Nordic",     "Muted arctic blue-grey."],
+  ]},
+  { group: "Light", items: [
+    ["daylight",  "Daylight",   "Cool white and blue."],
+    ["paper",     "Paper",      "Warm off-white, ink text."],
+    ["slate",     "Slate",      "Cool grey with teal."],
+    ["sand",      "Sand",       "Warm beige, low glare."],
+    ["mint",      "Mint",       "White with a green accent."],
+    ["solar",     "Solar",      "Warm parchment."],
+    ["contrast",  "High contrast", "Black on white, heavy borders."],
+  ]},
+];
+const THEME_KEY = "bbhunter.theme";
+const DEFAULT_THEME = "midnight";
+
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") || DEFAULT_THEME;
+}
+
+function applyTheme(name) {
+  const known = THEMES.some(g => g.items.some(([id]) => id === name));
+  const theme = known ? name : DEFAULT_THEME;
+  document.documentElement.setAttribute("data-theme", theme);
+  try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* private mode */ }
+  const sel = $("themeSelect");
+  if (sel && sel.value !== theme) sel.value = theme;
+}
+
+function renderThemes() {
+  const sel = $("themeSelect");
+  if (!sel) return;
+  sel.innerHTML = THEMES.map(g =>
+    `<optgroup label="${esc(g.group)}">` +
+    g.items.map(([id, label, blurb]) =>
+      `<option value="${id}" title="${esc(blurb)}">${esc(label)}</option>`).join("") +
+    `</optgroup>`).join("");
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch (e) { /* private mode */ }
+  applyTheme(saved || currentTheme());
+  sel.onchange = () => applyTheme(sel.value);
 }
 
 /* ── programmes ─────────────────────────────────────────────────────────── */
