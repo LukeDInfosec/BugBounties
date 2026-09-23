@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bbhunter</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🛰️</text></svg>">
+<style>
+:root{
+  --bg:#0a0d14; --surface:#111722; --surface-2:#161d2b; --raised:#1c2534;
+  --border:#222d40; --border-soft:#1a2231;
+  --text:#e6edf7; --dim:#8b9bb4; --faint:#5d6b82;
+  --accent:#4f8cff; --accent-soft:rgba(79,140,255,.13);
+  --ok:#2dd4a7; --warn:#f6b73c; --danger:#ff5f6d; --critical:#ff3b5c;
+  --info:#5eb0ff; --mono:ui-monospace,"JetBrains Mono","SF Mono",Menlo,monospace;
+  --radius:10px;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--text);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;display:flex;overflow:hidden;
+}
+
+/* ── shell ─────────────────────────────────────────────────────────────── */
+#rail{
+  width:232px;flex:0 0 232px;background:var(--surface);
+  border-right:1px solid var(--border);display:flex;flex-direction:column;
+}
+.brand{padding:18px 18px 14px;border-bottom:1px solid var(--border-soft)}
+.brand h1{margin:0;font-size:17px;letter-spacing:-.3px;display:flex;align-items:center;gap:9px}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+.brand .dot.live{background:var(--ok);box-shadow:0 0 0 4px rgba(45,212,167,.16);
+  animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 8px rgba(45,212,167,0)}}
+.brand .ver{font-size:11px;color:var(--faint);margin-top:3px;font-family:var(--mono)}
+
+nav{padding:10px 10px;flex:1;overflow-y:auto}
+nav .group{font-size:10.5px;letter-spacing:.9px;text-transform:uppercase;
+  color:var(--faint);padding:14px 9px 6px;font-weight:600}
+nav button{
+  display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  background:none;border:0;color:var(--dim);padding:8px 9px;border-radius:8px;
+  cursor:pointer;font-size:13.5px;font-family:inherit;margin-bottom:1px;
+}
+nav button:hover{background:var(--surface-2);color:var(--text)}
+nav button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+nav button .badge{margin-left:auto;font-size:11px;color:var(--faint);
+  font-family:var(--mono)}
+nav button.on .badge{color:var(--accent)}
+
+#progpick{padding:10px 14px;border-bottom:1px solid var(--border-soft)}
+#progpick select{width:100%}
+.railfoot{padding:12px 14px;border-top:1px solid var(--border-soft);
+  font-size:11.5px;color:var(--faint)}
+
+main{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+header.top{
+  padding:15px 24px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:14px;background:var(--surface);flex:0 0 auto;
+}
+header.top h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.2px}
+header.top .sub{color:var(--dim);font-size:12.5px}
+header.top .spacer{flex:1}
+#view{flex:1;overflow-y:auto;padding:22px 24px 40px}
+.page{display:none}
+.page.on{display:block}
+
+/* ── primitives ────────────────────────────────────────────────────────── */
+.card{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:18px;margin-bottom:16px}
+.card > h3{margin:0 0 4px;font-size:14px;font-weight:600;letter-spacing:-.1px}
+.card > .hint{color:var(--dim);font-size:12.5px;margin:0 0 14px;max-width:70ch}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:1100px){.grid2{grid-template-columns:1fr}}
+
+label{display:block;font-size:12px;color:var(--dim);margin:12px 0 5px;font-weight:500}
+label:first-child{margin-top:0}
+input[type=text],input[type=number],textarea,select{
+  width:100%;background:var(--bg);border:1px solid var(--border);
+  color:var(--text);padding:9px 11px;border-radius:8px;font-family:inherit;
+  font-size:13.5px;outline:none;
+}
+textarea{font-family:var(--mono);font-size:12.5px;resize:vertical;min-height:110px;
+  line-height:1.65}
+input:focus,textarea:focus,select:focus{border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-soft)}
+input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);
+  vertical-align:-2px;margin-right:7px;cursor:pointer}
+.check{display:flex;align-items:flex-start;gap:8px;padding:7px 0;cursor:pointer;
+  font-size:13px;color:var(--text)}
+.check span.d{display:block;color:var(--dim);font-size:12px;margin-top:2px}
+
+button.btn{
+  background:var(--accent);color:#fff;border:0;padding:9px 17px;border-radius:8px;
+  font-size:13.5px;font-weight:600;cursor:pointer;font-family:inherit;
+}
+button.btn:hover{filter:brightness(1.1)}
+button.btn:disabled{opacity:.4;cursor:not-allowed;filter:none}
+button.ghost{background:var(--surface-2);color:var(--text);
+  border:1px solid var(--border)}
+button.ghost:hover{background:var(--raised)}
+button.danger{background:var(--danger)}
+button.sm{padding:5px 11px;font-size:12px;font-weight:500}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.right{margin-left:auto}
+
+.pill{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;
+  border-radius:999px;font-size:11px;font-weight:600;font-family:var(--mono)}
+.pill.critical{background:rgba(255,59,92,.16);color:var(--critical)}
+.pill.high{background:rgba(255,95,109,.14);color:var(--danger)}
+.pill.medium{background:rgba(246,183,60,.14);color:var(--warn)}
+.pill.low{background:rgba(94,176,255,.14);color:var(--info)}
+.pill.info{background:rgba(139,155,180,.14);color:var(--dim)}
+.pill.ok{background:rgba(45,212,167,.14);color:var(--ok)}
+.pill.allow{background:rgba(45,212,167,.14);color:var(--ok)}
+.pill.observe{background:rgba(246,183,60,.14);color:var(--warn)}
+.pill.deny{background:rgba(255,95,109,.14);color:var(--danger)}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--faint);font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.7px;padding:8px 10px;border-bottom:1px solid var(--border);
+  font-weight:600;position:sticky;top:0;background:var(--surface);z-index:1}
+td{padding:9px 10px;border-bottom:1px solid var(--border-soft);vertical-align:top}
+tr:hover td{background:var(--surface-2)}
+td.mono,.mono{font-family:var(--mono);font-size:12px}
+.trunc{max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.empty{text-align:center;padding:44px 20px;color:var(--faint)}
+.empty .big{font-size:30px;margin-bottom:10px;opacity:.5}
+
+/* ── run view ──────────────────────────────────────────────────────────── */
+#stagestrip{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px}
+.stage{
+  display:flex;align-items:center;gap:8px;background:var(--surface-2);
+  border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:12.5px;
+}
+.stage .ic{width:7px;height:7px;border-radius:50%;background:var(--faint);flex:0 0 auto}
+.stage.running{border-color:var(--accent);background:var(--accent-soft)}
+.stage.running .ic{background:var(--accent);animation:pulse 1.4s infinite}
+.stage.completed .ic{background:var(--ok)}
+.stage.skipped{opacity:.5}
+.stage.skipped .ic{background:var(--faint)}
+.stage.failed{border-color:var(--danger)}
+.stage.failed .ic{background:var(--danger)}
+.stage .n{font-family:var(--mono);font-size:11px;color:var(--faint)}
+
+#counters{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));
+  gap:10px;margin-bottom:16px}
+.counter{background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:13px 15px}
+.counter .v{font-size:23px;font-weight:700;font-family:var(--mono);
+  letter-spacing:-1px;line-height:1.1}
+.counter .k{font-size:11px;color:var(--dim);margin-top:3px}
+
+#log{
+  background:#070a10;border:1px solid var(--border);border-radius:var(--radius);
+  padding:13px 15px;font-family:var(--mono);font-size:11.5px;line-height:1.7;
+  height:320px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;
+}
+#log .l-warn{color:var(--warn)}
+#log .l-error{color:var(--danger)}
+#log .l-tool{color:var(--faint)}
+#log .l-info{color:var(--text)}
+#log .l-ok{color:var(--ok)}
+#log .t{color:var(--faint);margin-right:8px}
+
+/* ── modal ─────────────────────────────────────────────────────────────── */
+#modal{position:fixed;inset:0;background:rgba(3,6,12,.78);display:none;
+  align-items:center;justify-content:center;z-index:100;backdrop-filter:blur(3px)}
+#modal.on{display:flex}
+#modalbox{background:var(--surface);border:1px solid var(--border);
+  border-radius:14px;max-width:760px;width:calc(100% - 44px);max-height:86vh;
+  overflow-y:auto;padding:24px}
+#modalbox h3{margin:0 0 6px;font-size:17px}
+
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);
+  padding:11px 14px;border-radius:0 8px 8px 0;font-size:12.5px;margin:12px 0;
+  color:var(--text)}
+.note.warn{border-color:var(--warn);background:rgba(246,183,60,.09)}
+.note.danger{border-color:var(--danger);background:rgba(255,95,109,.09)}
+.note b{font-weight:600}
+
+.kv{display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font-size:12.5px}
+.kv .k{color:var(--dim)}
+.kv .v{font-family:var(--mono);font-size:12px}
+
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+.filters select,.filters input{width:auto;min-width:130px}
+.chip{background:var(--surface-2);border:1px solid var(--border);padding:4px 10px;
+  border-radius:999px;font-size:11.5px;cursor:pointer;color:var(--dim)}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+details{margin-top:9px}
+summary{cursor:pointer;color:var(--dim);font-size:12.5px;user-select:none}
+summary:hover{color:var(--text)}
+pre{background:#070a10;border:1px solid var(--border);border-radius:8px;
+  padding:11px 13px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;
+  margin:8px 0;line-height:1.6}
+code{font-family:var(--mono);font-size:12px;background:var(--surface-2);
+  padding:1px 5px;border-radius:4px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:5px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</head>
+<body>
+
+<div id="rail">
+  <div class="brand">
+    <h1><span class="dot" id="livedot"></span> bbhunter</h1>
+    <div class="ver" id="version">—</div>
+  </div>
+  <div id="progpick">
+    <select id="programSelect"><option value="">No programme selected</option></select>
+  </div>
+  <nav>
+    <div class="group">Engagement</div>
+    <button data-page="scope" class="on">Scope</button>
+    <button data-page="run">Run<span class="badge" id="runBadge"></span></button>
+    <div class="group">Results</div>
+    <button data-page="findings">Findings<span class="badge" id="findBadge"></span></button>
+    <button data-page="assets">Assets<span class="badge" id="assetBadge"></span></button>
+    <button data-page="diff">What's new</button>
+    <div class="group">System</div>
+    <button data-page="tools">Tools<span class="badge" id="toolBadge"></span></button>
+    <button data-page="settings">Settings</button>
+    <button data-page="update">Update</button>
+  </nav>
+  <div class="railfoot" id="railfoot">Bound to localhost only.</div>
+</div>
+
+<main>
+  <header class="top">
+    <h2 id="pageTitle">Scope</h2>
+    <span class="sub" id="pageSub"></span>
+    <div class="spacer"></div>
+    <div id="topActions" class="row"></div>
+  </header>
+  <div id="view">
+
+    <!-- ── Scope ─────────────────────────────────────────────────────── -->
+    <div class="page on" id="page-scope">
+      <div class="card">
+        <h3>Programme</h3>
+        <p class="hint">Scope is the safety boundary, not a filter. Every tool's
+          traffic is routed through a local gate that re-checks these rules on
+          every single connection, so a crawler following a redirect off-scope
+          is refused at the socket rather than discovered afterwards.</p>
+        <div class="grid2">
+          <div>
+            <label>Programme name</label>
+            <input type="text" id="pName" placeholder="Acme Corp">
+            <label>Platform</label>
+            <select id="pPlatform">
+              <option value="">Not specified</option>
+              <option value="hackerone">HackerOne</option>
+              <option value="bugcrowd">Bugcrowd</option>
+              <option value="intigriti">Intigriti</option>
+              <option value="yeswehack">YesWeHack</option>
+              <option value="private">Private / direct</option>
+            </select>
+            <label>Your handle — sent as an identification header on every request</label>
+            <input type="text" id="pHandle" placeholder="LukeDInfosec">
+            <div class="note" id="headerPreview">
+              Set a handle and every request will carry
+              <code>X-Bug-Bounty: &lt;handle&gt;</code>. Most programmes ask for
+              this; it is what lets a blue team tell your testing from an attack.
+            </div>
+            <label>Additional headers — one per line, <code>Name: value</code></label>
+            <textarea id="pHeaders" style="min-height:70px"
+              placeholder="X-HackerOne: LukeDInfosec&#10;X-Researcher-Contact: luke@example.com"></textarea>
+          </div>
+          <div>
+            <label>In scope — one rule per line</label>
+            <textarea id="pInclude" placeholder="*.acme.com&#10;acme.co.uk&#10;45.33.32.0/24&#10;https://portal.acme.com/app/&#10;api-*.edge.acme.com"></textarea>
+            <label>Out of scope — these always win over anything above</label>
+            <textarea id="pExclude" style="min-height:80px"
+              placeholder="*.internal.acme.com&#10;legacy.acme.com"></textarea>
+          </div>
+        </div>
+        <details>
+          <summary>Rule syntax and advanced options</summary>
+          <div class="kv" style="margin:12px 0">
+            <span class="k"><code>*.acme.com</code></span><span class="v">the domain and everything under it</span>
+            <span class="k"><code>acme.com</code></span><span class="v">bare domain — children included unless you turn that off below</span>
+            <span class="k"><code>api.acme.com</code></span><span class="v">treated as a domain rule; use the toggle for exact-host-only</span>
+            <span class="k"><code>api-*.acme.com</code></span><span class="v">glob; <code>*</code> never crosses a dot</span>
+            <span class="k"><code>45.33.32.0/24</code></span><span class="v">address range</span>
+            <span class="k"><code>https://host/path/</code></span><span class="v">only URLs under that path</span>
+            <span class="k"><code>re:^api\d+\.acme\.com$</code></span><span class="v">anchored regular expression</span>
+          </div>
+          <label class="check"><input type="checkbox" id="pBareChildren" checked>
+            <span>A bare domain includes its subdomains
+              <span class="d">Turn this off when a programme lists exact hosts only.</span></span></label>
+          <label class="check"><input type="checkbox" id="pAllowPrivate">
+            <span>Allow private address ranges
+              <span class="d">Only for engagements that cover internal infrastructure.
+                Loopback, RFC1918 and link-local are blocked otherwise.</span></span></label>
+          <label class="check"><input type="checkbox" id="pAllowMetadata">
+            <span>Allow cloud metadata addresses
+              <span class="d">169.254.169.254 and equivalents. Almost never what you
+                want — a scanner wandering in there turns recon into credential
+                theft against your client.</span></span></label>
+          <div class="grid2" style="margin-top:12px">
+            <div><label>Requests per second, per host</label>
+              <input type="number" id="pRps" value="5" min="1" max="100" step="1"></div>
+            <div><label>Requests per second, all hosts combined</label>
+              <input type="number" id="pGlobalRps" value="20" min="1" max="500"></div>
+          </div>
+        </details>
+        <div class="row" style="margin-top:16px">
+          <button class="btn" id="saveProgram">Save programme</button>
+          <button class="btn ghost" id="deleteProgram">Delete</button>
+          <span class="right mono" id="scopeHash" style="color:var(--faint);font-size:11.5px"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Check a host against the scope</h3>
+        <p class="hint">Before a run, paste anything you are unsure about. This is
+          exactly the decision the gate will make at connection time.</p>
+        <textarea id="explainIn" style="min-height:80px"
+          placeholder="api.acme.com&#10;notacme.com&#10;legacy.acme.com&#10;169.254.169.254"></textarea>
+        <div class="row" style="margin-top:10px">
+          <button class="btn ghost" id="explainBtn">Explain</button>
+        </div>
+        <div id="explainOut" style="margin-top:12px"></div>
+      </div>
+    </div>
+
+    <!-- ── Run ───────────────────────────────────────────────────────── -->
+    <div class="page" id="page-run">
+      <div class="card" id="runSetup">
+        <h3>Start a scan</h3>
+        <p class="hint">Pick a profile. Everything that determines the outcome is
+          shown before anything is sent.</p>
+        <div id="presets"></div>
+        <details id="activeBox">
+          <summary>Active testing — off by default</summary>
+          <div class="note danger">
+            <b>These stages send payloads.</b> They are scope-locked and
+            rate-limited like everything else, and they only ever look for
+            read-only proof — a reflection, a boolean difference, an out-of-band
+            callback. Nothing here writes, deletes or sends mail. They still
+            generate traffic a target will notice, so turn them on deliberately.
+          </div>
+          <div id="activeStages"></div>
+        </details>
+        <div class="row" style="margin-top:16px">
+          <button class="btn" id="preflightBtn">Review and start</button>
+          <span class="mono" style="color:var(--faint);font-size:11.5px"
+            id="runHint"></span>
+        </div>
+      </div>
+
+      <div class="card" id="runLive" style="display:none">
+        <div class="row" style="margin-bottom:14px">
+          <h3 style="margin:0">Live</h3>
+          <span class="pill ok" id="runStatus">running</span>
+          <div class="right row">
+            <button class="btn danger sm" id="cancelBtn">Stop scan</button>
+          </div>
+        </div>
+        <div id="stagestrip"></div>
+        <div id="counters"></div>
+        <div class="row" style="margin-bottom:8px">
+          <span style="font-size:12px;color:var(--dim)">Output</span>
+          <div class="right row">
+            <span class="chip on" data-logfilter="all">All</span>
+            <span class="chip" data-logfilter="framework">Framework only</span>
+            <span class="chip" data-logfilter="warn">Warnings</span>
+          </div>
+        </div>
+        <div id="log"></div>
+      </div>
+
+      <div class="card">
+        <h3>Previous runs</h3>
+        <div id="runsList"></div>
+      </div>
+    </div>
+
+    <!-- ── Findings ──────────────────────────────────────────────────── -->
+    <div class="page" id="page-findings">
+      <div class="card">
+        <div class="filters">
+          <select id="fSeverity">
+            <option value="">All severities</option>
+            <option value="critical">Critical</option><option value="high">High</option>
+            <option value="medium">Medium</option><option value="low">Low</option>
+            <option value="info">Info</option>
+          </select>
+          <select id="fTriage">
+            <option value="">All states</option>
+            <option value="new">New</option><option value="reviewed">Reviewed</option>
+            <option value="reported">Reported</option>
+            <option value="dismissed">Dismissed</option>
+            <option value="duplicate">Duplicate</option>
+          </select>
+          <input type="text" id="fSearch" placeholder="Search title, target, detail…">
+          <span class="right" id="findingCounts"></span>
+        </div>
+        <div id="findingsList"></div>
+      </div>
+    </div>
+
+    <!-- ── Assets ────────────────────────────────────────────────────── -->
+    <div class="page" id="page-assets">
+      <div class="card">
+        <div class="filters">
+          <select id="aKind"><option value="">All kinds</option></select>
+          <select id="aDecision">
+            <option value="">All</option>
+            <option value="allow">In scope</option>
+            <option value="observe">Observed only</option>
+          </select>
+          <input type="text" id="aSearch" placeholder="Search…">
+          <span class="right mono" id="assetTotal" style="color:var(--faint);font-size:11.5px"></span>
+        </div>
+        <div id="assetsList"></div>
+      </div>
+    </div>
+
+    <!-- ── Diff ──────────────────────────────────────────────────────── -->
+    <div class="page" id="page-diff">
+      <div class="card">
+        <h3>What changed since the last run</h3>
+        <p class="hint">Being first to a newly exposed asset is where most of the
+          value in monitoring a programme is. A stage that failed can never
+          produce "disappeared" here — that would train you to ignore this
+          screen.</p>
+        <div id="diffOut"></div>
+      </div>
+    </div>
+
+    <!-- ── Tools ─────────────────────────────────────────────────────── -->
+    <div class="page" id="page-tools">
+      <div class="card">
+        <h3>Tooling</h3>
+        <p class="hint">The framework works with whatever is present and says so
+          when something is missing, rather than failing halfway through a run.
+          Required tools are marked; everything else degrades gracefully.</p>
+        <div class="row" style="margin-bottom:14px">
+          <button class="btn ghost sm" id="refreshTools">Re-detect</button>
+          <button class="btn ghost sm" id="copyInstall">Copy install commands for what's missing</button>
+        </div>
+        <div id="toolsList"></div>
+      </div>
+    </div>
+
+    <!-- ── Settings ──────────────────────────────────────────────────── -->
+    <div class="page" id="page-settings">
+      <div class="card">
+        <h3>Defaults</h3>
+        <p class="hint">Applied to every run unless the programme overrides them.</p>
+        <div class="grid2">
+          <div>
+            <label>User-Agent</label>
+            <input type="text" id="sUa" placeholder="bbhunter/1.0 (+LukeDInfosec)">
+            <label>Requests per second, per host</label>
+            <input type="number" id="sRps" min="1" max="100">
+            <label>Requests per second, combined</label>
+            <input type="number" id="sGlobalRps" min="1" max="500">
+            <label>nuclei severities</label>
+            <input type="text" id="sSeverity" placeholder="critical,high,medium,low">
+          </div>
+          <div>
+            <label>Crawl depth</label>
+            <input type="number" id="sDepth" min="1" max="10">
+            <label>Top ports</label>
+            <input type="number" id="sPorts" min="10" max="65535">
+            <label>Stage timeout (seconds)</label>
+            <input type="number" id="sTimeout" min="60" max="86400">
+            <label class="check" style="margin-top:18px">
+              <input type="checkbox" id="sIntrusive" checked>
+              <span>Exclude intrusive and denial-of-service templates
+                <span class="d">Leave this on. Those templates have no place in
+                  an automated pass against someone else's production system.</span></span></label>
+          </div>
+        </div>
+        <div class="row" style="margin-top:16px">
+          <button class="btn" id="saveSettings">Save defaults</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>API keys</h3>
+        <p class="hint">Optional. Each source is skipped cleanly when its key is
+          absent, so the framework works with none of these configured — they
+          simply widen what passive enumeration can see. Keys are written to
+          your local config file and never sent back to this page.</p>
+        <div id="apiKeys"></div>
+        <div class="row" style="margin-top:14px">
+          <button class="btn ghost" id="saveKeys">Save keys</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Update ────────────────────────────────────────────────────── -->
+    <div class="page" id="page-update">
+      <div class="card">
+        <h3>Update</h3>
+        <p class="hint">Pulls the latest code from GitHub. Your engagement
+          database and configuration live outside the checkout and are never
+          touched by an update.</p>
+        <div class="row">
+          <button class="btn" id="checkUpdate">Check for updates</button>
+          <button class="btn ghost" id="applyUpdate" style="display:none">Install update</button>
+        </div>
+        <div id="updateOut" style="margin-top:14px"></div>
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<div id="modal"><div id="modalbox"></div></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
