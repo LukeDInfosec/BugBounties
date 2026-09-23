@@ -255,10 +255,12 @@ reporting four thousand removed subdomains teaches you to ignore the screen.
 
 ## Updating
 
-If the repository is **private**, the Update page cannot read the published
-version number without credentials and will say so; `git pull` from the
-terminal still works with your stored credentials. Making the repository public
-enables the in-app version check.
+The Update page reads the published version through **your own git remote**,
+so a private repository works exactly as a public one does — whatever
+credentials `git pull` uses, the version check uses. Anonymous HTTPS to
+`raw.githubusercontent.com` is only a fallback for a checkout whose remote is
+not reachable; a private repo answers 404 there, which is reported as "probably
+private" rather than as a failure to reach GitHub.
 
 The **Update** page checks GitHub and pulls. It refuses to run if you have
 local modifications rather than discarding them, and your engagement database
