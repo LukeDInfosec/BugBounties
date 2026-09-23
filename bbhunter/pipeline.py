@@ -1382,6 +1382,16 @@ class ScreenshotStage(Stage):
     CHROME_BINARIES = ("chromium", "chromium-browser", "google-chrome",
                        "google-chrome-stable", "chrome")
 
+    NO_BROWSER = (
+        "no browser is installed, so nothing can be photographed. Every "
+        "backend drives a real one: httpx and gowitness both embed go-rod, "
+        "which tries to download Chromium on first use and fails on a box "
+        "that cannot reach Google's storage bucket.\n\n"
+        "    sudo apt install -y chromium\n\n"
+        "Then run this step again. If you already have a browser somewhere "
+        "unusual — a snap, a flatpak, an unpacked tarball — set chrome_binary "
+        "in Settings to its full path instead.")
+
     async def run(self, ctx):
         source = ctx.workdir / "distinct.txt"
         if not source.exists():
@@ -1403,28 +1413,57 @@ class ScreenshotStage(Stage):
         shots = ctx.workdir / "screenshots"
         shots.mkdir(exist_ok=True)
 
-        if ctx.registry.have("httpx"):
-            result = await self._httpx(ctx, targets, shots)
-        elif ctx.registry.have("gowitness"):
-            result = await self._gowitness(ctx, targets, shots)
-        else:
-            chrome = self._find_chrome(ctx.config.get("chrome_binary", ""))
-            if not chrome:
-                return {"produced": 0,
-                        "skipped": ("no screenshot backend — install httpx, "
-                                    "gowitness or chromium, or set "
-                                    "chrome_binary in settings to a browser "
-                                    "you already have")}
-            ctx.log(f"using headless {Path(chrome).name} directly; httpx or "
-                    f"gowitness would be faster", "warn")
-            result = await self._chrome(ctx, targets, shots, chrome)
+        # Every backend drives a real browser. httpx and gowitness both embed
+        # go-rod, which downloads Chromium on first use — and that download is
+        # the first thing to fail on a box with no egress to Google's storage
+        # bucket, which is most bug bounty boxes. So find the browser first and
+        # say plainly if there isn't one, rather than running a backend that
+        # cannot possibly produce a file and then reporting "0 screenshots".
+        chrome = self._find_chrome(ctx.config.get("chrome_binary", ""))
+        if not chrome:
+            return {"produced": 0, "skipped": self.NO_BROWSER}
 
-        captured = self._index(ctx, targets, shots)
+        attempted, commands = [], []
+        captured = []
+        for label, backend in self._backends(ctx):
+            attempted.append(label)
+            commands.append(await backend(ctx, targets, shots, chrome))
+            captured = self._index(ctx, targets, shots)
+            if captured:
+                break
+            ctx.log(f"{label} produced no images — trying the next backend",
+                    "warn")
+
         ctx.counter("screenshots", len(captured))
-        ctx.log(f"{len(captured)} screenshot(s) captured. Only the distinct "
-                f"applications were shot — screenshotting every duplicate of a "
-                f"404 page is the usual way a run stops finishing.")
-        return {"produced": len(captured), "command": result}
+        if not captured:
+            ctx.log(f"no screenshots: {', '.join(attempted)} all produced "
+                    f"nothing. The browser found was {chrome}.", "error")
+            return {"produced": 0,
+                    "skipped": (f"tried {', '.join(attempted)}; none produced "
+                                f"an image. See logs/screenshots.log."),
+                    "command": "; ".join(c for c in commands if c)}
+
+        ctx.log(f"{len(captured)} screenshot(s) captured with "
+                f"{attempted[-1]}. Only the distinct applications were shot — "
+                f"screenshotting every duplicate of a 404 page is the usual "
+                f"way a run stops finishing.")
+        return {"produced": len(captured),
+                "command": "; ".join(c for c in commands if c)}
+
+    def _backends(self, ctx):
+        """The ways to get a picture, best first, as (label, coroutine).
+
+        Ordered by speed, not by preference of author: httpx is already in the
+        pipeline and shoots concurrently, gowitness is what most people have,
+        and driving the browser directly is the one that cannot fail for want
+        of a download."""
+        order = []
+        if ctx.registry.have("httpx"):
+            order.append(("httpx", self._httpx))
+        if ctx.registry.have("gowitness"):
+            order.append(("gowitness", self._gowitness))
+        order.append(("the browser directly", self._chrome))
+        return order
 
     # ── backends ──────────────────────────────────────────────────────────
 
@@ -1447,22 +1486,27 @@ class ScreenshotStage(Stage):
                 return path
         return ""
 
-    async def _httpx(self, ctx, targets, shots):
+    async def _httpx(self, ctx, targets, shots, chrome):
         target_file = ctx.write_list("screenshot_targets.txt", targets)
+        # -system-chrome stops go-rod trying to download its own Chromium,
+        # which is the failure this whole stage used to die on.
         argv = [ctx.registry.path("httpx"), "-l", str(target_file),
-                "-ss", "-esb", "-ehb", "-silent", "-json",
-                "-srd", str(shots), "-t", "8", "-timeout", "20"]
+                "-ss", "-system-chrome", "-esb", "-ehb", "-silent", "-json",
+                "-srd", str(shots), "-t", "8", "-timeout", "20",
+                "-screenshot-timeout", "25"]
         argv += ctx.identification("httpx")
         result = await ctx.runner(ctx.workdir / "logs" / "screenshots.log",
                                   "httpx").run(
             argv, timeout=ctx.config.get("stage_timeout", 2400), idle_timeout=420)
         return result.command
 
-    async def _gowitness(self, ctx, targets, shots):
+    async def _gowitness(self, ctx, targets, shots, chrome):
         target_file = ctx.write_list("screenshot_targets.txt", targets)
         # v3 restructured the CLI; the old `gowitness file -f` form is gone.
+        # --chrome-path is the same defence as httpx's -system-chrome.
         argv = [ctx.registry.path("gowitness"), "scan", "file",
                 "-f", str(target_file), "--screenshot-path", str(shots),
+                "--chrome-path", chrome,
                 "--write-jsonl", "--disable-db", "-t", "8"]
         result = await ctx.runner(ctx.workdir / "logs" / "screenshots.log",
                                   "gowitness").run(
@@ -1489,11 +1533,11 @@ class ScreenshotStage(Stage):
                         "--window-size=1280,800",
                         f"--screenshot={out}"]
                 if ctx.proxy:
+                    # Chrome has no per-request header flag, so identification
+                    # headers reach the target from the gate on plain HTTP and
+                    # not at all inside an HTTPS tunnel. Routing through the
+                    # gate is what keeps the capture in scope either way.
                     argv.append(f"--proxy-server={ctx.proxy.url}")
-                for name, value in (ctx.config.get("headers") or {}).items():
-                    # Chrome has no per-header flag; the proxy stamps these on
-                    # plain HTTP and this is recorded so the gap is visible.
-                    break
                 argv.append(url)
                 result = await ctx.runner(None, "chromium").run(
                     argv, timeout=60, idle_timeout=45, capture_stdout=False)

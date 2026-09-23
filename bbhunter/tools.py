@@ -233,6 +233,16 @@ TOOLS = {
         version_args=("version",),
         notes="v3 restructured the CLI into `gowitness scan ...` subcommands."),
 
+    "chromium": Tool(
+        "chromium",
+        ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"),
+        "The browser every screenshot backend drives",
+        "sudo apt install -y chromium", install_kind="apt",
+        version_args=("--version",),
+        notes="httpx and gowitness embed go-rod, which otherwise tries to "
+              "download its own Chromium and fails on a box with no egress to "
+              "Google's storage bucket. Without a browser there is no gallery."),
+
     # ── supporting ────────────────────────────────────────────────────────
     "nmap": Tool(
         "nmap", ("nmap",), "Service and version detection on the open ports",
