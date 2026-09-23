@@ -30,8 +30,13 @@ def is_git_checkout() -> bool:
 
 
 async def _git(*args, cwd=None):
+    # core.fileMode=false for every call: the install instructions tell you to
+    # `chmod +x bbf install.sh` (GitHub's web upload does not carry the
+    # executable bit), and without this git reports those two files as locally
+    # modified and the updater refuses to run. A permission bit is not an edit
+    # worth protecting; a changed line is, and those are still caught.
     proc = await asyncio.create_subprocess_exec(
-        "git", *args, cwd=str(cwd or install_root()),
+        "git", "-c", "core.fileMode=false", *args, cwd=str(cwd or install_root()),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         stdin=asyncio.subprocess.DEVNULL)
     out, _ = await proc.communicate()
@@ -50,10 +55,20 @@ async def check() -> dict:
         info["message"] = "git is not installed, so the Update button cannot work."
         return info
     if not info["git"]:
-        info["message"] = ("This copy was not cloned from git, so it cannot "
-                           "update itself. Clone it with "
-                           f"`git clone https://github.com/{REPO}.git` to enable "
-                           "updates.")
+        info["message"] = (
+            "This copy was not cloned from git (it looks like a downloaded "
+            "zip), so it cannot update itself. You do not have to download it "
+            "again — turn this folder into a checkout in place:\n\n"
+            f"    cd {install_root()}\n"
+            f"    git init\n"
+            f"    git remote add origin https://github.com/{REPO}.git\n"
+            f"    git fetch origin\n"
+            f"    git reset --hard origin/main     # discards local edits\n"
+            f"    git branch --set-upstream-to=origin/main main\n\n"
+            "Your database, settings and results live outside the checkout, so "
+            "none of that is touched. If the repository is private, clone over "
+            "SSH or sign in with `gh auth login` first — GitHub no longer "
+            "accepts a password over HTTPS.")
         return info
 
     code, out = await _git("status", "--porcelain")

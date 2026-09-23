@@ -12,22 +12,56 @@ import webbrowser
 from . import config as cfg
 
 
-def _free_port(preferred=8777):
-    for port in (preferred, 0):
-        with socket.socket() as sock:
-            try:
-                sock.bind(("127.0.0.1", port))
-                return sock.getsockname()[1]
-            except OSError:
-                continue
-    return 8777
+DEFAULT_PORT = 8777
+
+
+def _port_free(host, port):
+    """True if this process could bind there right now."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _next_free_port(host, start=DEFAULT_PORT, tries=20):
+    """The first free port at or after `start`, else one the OS picks."""
+    for port in range(start, start + tries):
+        if _port_free(host, port):
+            return port
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.bind((host, 0))
+        return sock.getsockname()[1]
+
+
+def _bbhunter_on(host, port, timeout=1.5):
+    """Is the thing already holding this port another copy of bbhunter?
+
+    Answering this is what turns 'address already in use' into a sentence the
+    person can act on: their own interface is usually already open."""
+    import json
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    shown = f"[{host}]" if ":" in host else host
+    try:
+        with opener.open(f"http://{shown}:{port}/api/meta", timeout=timeout) as r:
+            return "version" in json.loads(r.read())
+    except Exception:
+        return False
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="bbhunter",
         description="Bug bounty reconnaissance with scope enforced at the socket.")
-    parser.add_argument("--port", type=int, default=8777)
+    parser.add_argument("--port", type=int, default=None,
+                        help=f"Default {DEFAULT_PORT}. If that one is taken the "
+                             f"next free port is used; an explicit --port is "
+                             f"never silently moved.")
     parser.add_argument("--host", default="127.0.0.1",
                         help="Only change this if you understand that this "
                              "process can start scans and holds your API keys.")
@@ -58,8 +92,33 @@ def main(argv=None):
 
     from .server import create_app
 
-    port = args.port if args.port else _free_port()
-    url = f"http://{args.host}:{port}"
+    # Resolve the port BEFORE printing anything, so the banner never advertises
+    # a URL that was never going to work.
+    asked = args.port
+    port = asked if asked is not None else DEFAULT_PORT
+    if not _port_free(args.host, port):
+        shown = f"[{args.host}]" if ":" in args.host else args.host
+        busy = f"http://{shown}:{port}"
+        if _bbhunter_on(args.host, port):
+            print(f"\n  bbhunter is already running at {busy}\n\n"
+                  f"  Open that, or stop the other copy first "
+                  f"(pkill -f 'python3 -m bbhunter'). To run a second copy "
+                  f"alongside it, pass a different --port.\n", file=sys.stderr)
+            if not args.no_browser:
+                webbrowser.open(busy)
+            return 3
+        if asked is not None:
+            print(f"\n  Port {port} is already in use by something else, and "
+                  f"you asked for it explicitly, so nothing was started.\n\n"
+                  f"  See what holds it:  ss -ltnp | grep {port}\n"
+                  f"  Or let bbhunter choose:  bbf\n", file=sys.stderr)
+            return 3
+        port = _next_free_port(args.host, DEFAULT_PORT)
+        print(f"[i] Port {DEFAULT_PORT} is in use by something else; "
+              f"using {port} instead.", file=sys.stderr)
+
+    shown = f"[{args.host}]" if ":" in args.host else args.host
+    url = f"http://{shown}:{port}"
     print(f"""
   bbhunter {cfg.version()}
   interface   {url}
