@@ -28,8 +28,9 @@ async function api(path, opts = {}) {
 
 /* ── navigation ─────────────────────────────────────────────────────────── */
 const TITLES = {
-  scope: ["Scope", "What may be touched, and what may never be"],
-  run: ["Run", "Pick a profile, review what will happen, then start"],
+  scope: ["Step 1 — Scope", "What may be touched, and what may never be"],
+  run: ["Step 2 — Run", "Each step feeds the next; run the chain or one step"],
+  gallery: ["Gallery", "What each distinct application looks like"],
   findings: ["Findings", "Triage state persists across runs"],
   assets: ["Assets", "Everything discovered, in scope and out"],
   diff: ["What's new", "Changes since the previous completed run"],
@@ -50,6 +51,7 @@ function show(page) {
   const [title, sub] = TITLES[page] || [page, ""];
   $("pageTitle").textContent = title;
   $("pageSub").textContent = sub;
+  if (page === "gallery") loadGallery();
   if (page === "findings") loadFindings();
   if (page === "assets") loadAssets();
   if (page === "diff") loadDiff();
@@ -72,6 +74,7 @@ async function boot() {
     `Bound to localhost only.<br><span class="mono" style="font-size:10.5px">${esc(S.meta.data_dir)}</span>`;
   renderPresets();
   renderActiveStages();
+  renderPhases();
   fillSettings(S.meta.settings);
   await loadPrograms();
   await loadTools();
@@ -98,7 +101,8 @@ function selectProgram(id) {
   const p = S.program;
   $("pName").value = p?.name || "";
   $("pPlatform").value = p?.platform || "";
-  $("pHandle").value = p?.handle || "";
+  $("pHandle").value = p?.handle ?? (S.meta?.settings?.handle || "");
+  if (!p && S.meta?.settings?.platform) $("pPlatform").value = S.meta.settings.platform;
   $("pInclude").value = (p?.scope?.include || []).join("\n");
   $("pExclude").value = (p?.scope?.exclude || []).join("\n");
   $("pBareChildren").checked = p ? p.scope.bare_includes_children !== false : true;
@@ -113,7 +117,8 @@ function selectProgram(id) {
   $("scopeHash").textContent = p ? "scope " + p.scope_hash : "";
   updateHeaderPreview();
   updateBadges();
-  if (p) { loadFindings(); loadAssets(); }
+  if (p) { loadFindings(); loadAssets(); loadGallery(); }
+  renderPhases();
 }
 
 $("pHandle").oninput = updateHeaderPreview;
@@ -214,6 +219,93 @@ function renderActiveStages() {
   $("activeStages").innerHTML = Object.entries(S.meta.active_stages).map(([key, a]) => `
     <label class="check"><input type="checkbox" class="activestage" value="${key}">
       <span><b>${esc(a.label)}</b><span class="d">${esc(a.warning)}</span></span></label>`).join("");
+}
+
+/* The chain as the phases a tester thinks in. The grouping comes from the
+   server so the interface and the engine cannot disagree about what belongs
+   to which step. */
+function renderPhases() {
+  const stages = S.meta.stages || {};
+  $("phaseList").innerHTML = (S.meta.phases || []).map(ph => {
+    const mine = ph.stages.filter(k => stages[k]);
+    const states = mine.map(k => S.stages?.[k]).filter(Boolean);
+    let cls = "";
+    if (states.length && states.every(v => ["completed", "skipped"].includes(v))) cls = "done";
+    if (states.includes("running")) cls = "running";
+    if (states.includes("failed")) cls = "failed";
+
+    const chips = mine.map(k => {
+      const st = S.stages?.[k] || "";
+      const meta = S.stageMeta?.[k] || {};
+      const tool = stages[k].tool;
+      const missing = tool && S.tools && S.tools.missing?.includes(tool);
+      const count = meta.produced != null && st === "completed" ? ` ${meta.produced}` : "";
+      return `<span class="chipstage ${st}" title="${esc(stages[k].description)}${
+        missing ? ` — needs ${tool}` : ""}">${esc(stages[k].name)}${count}</span>`;
+    }).join("");
+
+    return `<div class="phase ${cls}">
+      <div class="num">${ph.number}</div>
+      <div class="body">
+        <div class="t">${esc(ph.label)}</div>
+        <div class="b">${esc(ph.blurb)}</div>
+        <div class="steps">${chips}</div>
+      </div>
+      <div class="act">
+        <button class="btn ghost sm runphase" data-stages="${esc(mine.join(","))}"
+          data-label="${esc(ph.label)}">Run this step</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  document.querySelectorAll(".runphase").forEach(btn => {
+    btn.onclick = () => runStages(btn.dataset.stages.split(","), btn.dataset.label);
+  });
+}
+
+async function runStages(stageKeys, label) {
+  if (!S.program) return modal(`<h3>No programme selected</h3>
+    <p>Create one on the Scope page first.</p>
+    <button class="btn" onclick="closeModal()">Close</button>`);
+  if (S.running) return modal(`<h3>A scan is already running</h3>
+    <p class="hint">Stop it first, or wait for it to finish.</p>
+    <button class="btn" onclick="closeModal()">Close</button>`);
+
+  const active = stageKeys.filter(k => S.meta.active_stages[k]);
+  modal(`<h3>Run "${esc(label)}" only?</h3>
+    <p class="hint">This runs ${stageKeys.length} stage(s) against
+      ${esc(S.program.name)}, reusing whatever earlier steps already produced.
+      Useful when you have changed the scope or added hosts by hand and only
+      need this part redone.</p>
+    <pre>${esc(stageKeys.map(k => S.meta.stages[k]?.name || k).join("\n"))}</pre>
+    ${active.length ? `<div class="note danger"><b>This includes active
+      testing.</b> Payloads will be sent to in-scope parameters.</div>
+      <label class="check"><input type="checkbox" id="ackStep">
+      <span>I have authorisation to actively test this scope.</span></label>` : ""}
+    <div class="row" style="margin-top:16px">
+      <button class="btn" id="stepGo">Run</button>
+      <button class="btn ghost" onclick="closeModal()">Cancel</button>
+    </div>`);
+
+  $("stepGo").onclick = async () => {
+    if (active.length && !$("ackStep").checked) return;
+    try {
+      await api("/api/runs", { method: "POST", body: {
+        program_id: S.program.id, preset: "standard",
+        active_stages: active, acknowledge_active: true,
+        only_stages: stageKeys,
+      }});
+      closeModal();
+      $("runSetup").style.display = "none";
+      $("runLive").style.display = "";
+      $("log").innerHTML = "";
+      S.counters = {}; S.stages = {};
+      show("run");
+    } catch (e) {
+      modal(`<h3>Could not start</h3><p>${esc(e.message)}</p>
+        <button class="btn" onclick="closeModal()">Close</button>`);
+    }
+  };
 }
 
 function selectedActive() {
@@ -378,6 +470,8 @@ function handleEvent(ev) {
       S.stageMeta = S.stageMeta || {};
       S.stageMeta[d.key] = d;
       renderStages();
+      renderPhases();
+      if (d.key === "screenshots" && d.status === "completed") loadGallery();
       break;
     case "counter":
       S.counters[d.name] = d.value;
@@ -407,7 +501,8 @@ function handleEvent(ev) {
       $("runStatus").className = "pill " + (d.status === "completed" ? "ok" : "medium");
       addLog(`Run finished: ${d.status}. ${d.findings} finding(s), ${d.new_assets} new asset(s).`, "ok");
       $("runSetup").style.display = "";
-      loadRuns(); loadFindings(); loadAssets(); updateBadges();
+      renderPhases();
+      loadRuns(); loadFindings(); loadAssets(); loadGallery(); updateBadges();
       break;
   }
 }
@@ -451,6 +546,40 @@ function addLog(text, level = "info") {
   el.appendChild(div);
   while (el.childElementCount > 3000) el.removeChild(el.firstChild);
   if (stick) el.scrollTop = el.scrollHeight;
+}
+
+/* ── gallery ────────────────────────────────────────────────────────────── */
+$("gSearch").oninput = debounce(loadGallery, 300);
+
+async function loadGallery() {
+  if (!S.program) return;
+  const q = new URLSearchParams({ search: $("gSearch").value, limit: 400 });
+  const res = await api(`/api/programs/${S.program.id}/gallery?${q}`);
+  $("galleryCount").textContent = res.items.length
+    ? `${res.items.length} of ${res.total} captured` : "";
+  $("shotBadge").textContent = res.total || "";
+
+  $("galleryGrid").innerHTML = res.items.length ? res.items.map(item => {
+    const sev = item.status == null ? "info"
+      : item.status < 300 ? "ok" : item.status < 400 ? "low"
+      : item.status < 500 ? "medium" : "high";
+    return `<a class="shot" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">
+      <img class="img" src="${esc(item.image)}" alt="" loading="lazy">
+      <div class="meta">
+        <div class="u">${esc(item.url)}</div>
+        <div class="ti">${esc(item.title || "no title")}</div>
+        <div class="tags">
+          ${item.status != null ? `<span class="pill ${sev}">${item.status}</span>` : ""}
+          ${(item.tech || []).slice(0, 3).map(t =>
+            `<span class="pill info">${esc(t)}</span>`).join("")}
+          ${item.server ? `<span class="pill info">${esc(item.server)}</span>` : ""}
+        </div>
+      </div></a>`;
+  }).join("") : `<div class="empty" style="grid-column:1/-1">
+      <div class="big">◱</div>No screenshots yet.
+      <div style="margin-top:8px;font-size:12.5px">Run step 3 — "See what is
+      alive" — and the distinct applications are captured automatically.</div>
+    </div>`;
 }
 
 /* ── findings ───────────────────────────────────────────────────────────── */
