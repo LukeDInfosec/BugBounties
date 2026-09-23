@@ -190,6 +190,30 @@ While it runs you see a stage strip, live counters, findings appearing as they
 are found, and the log. Every stage records the exact command it ran, so when a
 result looks wrong you can see what produced it and reproduce it by hand.
 
+### Themes
+
+Fifteen palettes, in the picker at the top right of every page.
+
+| Dark | Light |
+|---|---|
+| **Midnight** (default) — blue-slate on near-black | **Daylight** — cool white and blue |
+| **Carbon** — neutral graphite, amber accent | **Paper** — warm off-white, ink text |
+| **Abyss** — deep navy and cyan | **Slate** — cool grey with teal |
+| **Nocturne** — near-black violet | **Sand** — warm beige, low glare |
+| **Evergreen** — dark green, easy at length | **Mint** — white with a green accent |
+| **Ember** — warm charcoal and orange | **Solar** — warm parchment |
+| **Terminal** — true black and phosphor green | **High contrast** — black on white, heavy borders |
+| **Nordic** — muted arctic blue-grey | |
+
+Every theme sets CSS custom properties only, so nothing in the interface
+hard-codes a colour and a new palette is about fifteen lines. All fifteen were
+checked for contrast: body text is at least 12:1 on its background in every
+one, secondary text at least 5.5:1, and the severity colours at least 4.7:1 —
+so a screenshot taken in any theme is still readable in a report.
+
+Your choice is remembered in that browser and applied before the page paints,
+so a restart or an update never flashes the previous theme.
+
 ### 3. Results
 
 **Gallery** is the fastest way to triage a large scope. Once httpx has confirmed
