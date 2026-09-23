@@ -231,11 +231,20 @@ are looking at pictures of the estate rather than a list of four thousand
 hostnames, so the login portal nobody remembers deploying stands out
 immediately.
 
-Capture uses whichever of `httpx -screenshot`, `gowitness` or headless Chrome is
-present, in that order, all of them driven through the scope gate so a redirect
-cannot walk the browser out of scope. `screenshot_cap` (default 300) bounds how
-many are taken; `chrome_binary` in Settings points at a Chrome or Chromium
-binary if it is somewhere the framework does not look by default.
+Capture needs **a browser on the machine** — `sudo apt install -y chromium`,
+which `install.sh` now does for you. This is not optional: httpx and gowitness
+both embed go-rod, which downloads its own Chromium on first use and fails on
+any box without egress to Google's storage bucket. If no browser is found the
+step says exactly that and how to fix it, rather than reporting nothing
+captured.
+
+Given a browser, capture tries `httpx -screenshot -system-chrome`, then
+`gowitness --chrome-path`, then the browser directly — **moving on if one
+produces no images**, not merely if one is missing. All three run through the
+scope gate, so a redirect cannot walk the browser out of scope.
+`screenshot_cap` (default 300) bounds how many are taken; `chrome_binary` in
+Settings points at a browser in an unusual place (a snap, a flatpak, an
+unpacked tarball).
 
 **Findings** group by a fingerprint built from the template, host, normalised
 path and matcher — deliberately not the response body or a timestamp. Dismiss
@@ -372,6 +381,7 @@ python3 tests/test_scope.py  # 70 scope cases
 python3 tests/test_proxy.py  # the gate, under real sockets
 python3 tests/test_store_runner.py
 python3 tests/test_updater.py  # what counts as a local change
+python3 tests/test_screenshots.py
 ```
 
 The full selftest is **56 checks**, including one screenshot genuinely captured

@@ -120,7 +120,10 @@ if run_root apt-get update -qq >/dev/null 2>&1; then
 else
     warn "could not update package lists without root — continuing"
 fi
-for pkg in git curl jq python3-pip pipx massdns nmap; do
+# chromium is not optional in practice: every screenshot backend drives a
+# browser, and httpx/gowitness try to download their own and fail on any
+# box without egress to Google's storage bucket.
+for pkg in git curl jq python3-pip pipx massdns nmap chromium; do
     apt_install "$pkg"
 done
 
