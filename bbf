@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# bbhunter launcher.
+#
+# Adds the places Go and pipx install tools to PATH, because a fresh Kali
+# shell does not have them and "subfinder: not found" after a successful
+# install is the most common first-run confusion.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/.pdtm/go/bin:$HOME/.local/bin"
+cd "$HERE"
+exec python3 -m bbhunter "$@"
