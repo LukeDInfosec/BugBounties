@@ -625,9 +625,23 @@ a:hover{text-decoration:underline}
       <div class="card">
         <div class="filters">
           <input type="text" id="gSearch" placeholder="Search by URL, title or technology…">
+          <select id="gSort" title="Order the cards">
+            <option value="recent">Newest first</option>
+            <option value="status">By status code</option>
+            <option value="url">By URL</option>
+            <option value="title">By title</option>
+          </select>
+          <select id="gLimit" title="How many cards to render">
+            <option value="60">Show 60</option>
+            <option value="120" selected>Show 120</option>
+            <option value="240">Show 240</option>
+            <option value="600">Show 600</option>
+            <option value="2000">Show everything</option>
+          </select>
           <span class="right mono" id="galleryCount"
             style="color:var(--faint);font-size:11.5px"></span>
         </div>
+        <div class="filters" id="gBuckets" style="margin-top:-6px"></div>
         <p class="hint" style="margin-top:0">Only the distinct applications are
           captured — hosts serving an identical response are collapsed first, so
           this is a gallery of things rather than four thousand copies of one

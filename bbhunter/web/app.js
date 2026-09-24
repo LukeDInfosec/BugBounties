@@ -627,10 +627,37 @@ $("gSearch").oninput = debounce(loadGallery, 300);
 
 async function loadGallery() {
   if (!S.program) return;
-  const q = new URLSearchParams({ search: $("gSearch").value, limit: 400 });
+  const q = new URLSearchParams({
+    search: $("gSearch").value,
+    limit: $("gLimit").value,
+    status: S.galleryStatus || "",
+    sort: $("gSort").value,
+  });
   const res = await api(`/api/programs/${S.program.id}/gallery?${q}`);
-  $("galleryCount").textContent = res.items.length
-    ? `${res.items.length} of ${res.total} captured` : "";
+
+  /* The counts come from the server and cover everything the search matched,
+     not the page being rendered — a chip that says "200 (3)" when there are
+     eighty would be worse than no chip. */
+  $("gBuckets").innerHTML = [
+    `<span class="chip ${S.galleryStatus ? "" : "on"}" data-status="">
+       All ${res.captured}</span>`,
+    ...res.buckets.filter(b => b.count).map(b =>
+      `<span class="chip ${S.galleryStatus === b.key ? "on" : ""}"
+             data-status="${esc(b.key)}">${esc(b.label)} ${b.count}</span>`),
+  ].join("");
+  for (const chip of $("gBuckets").querySelectorAll(".chip")) {
+    chip.onclick = () => {
+      S.galleryStatus = chip.dataset.status === S.galleryStatus
+        ? "" : chip.dataset.status;
+      loadGallery();
+    };
+  }
+
+  $("galleryCount").textContent = res.captured
+    ? (res.shown < res.matching
+        ? `showing ${res.shown} of ${res.matching} matching (${res.captured} captured)`
+        : `${res.matching} of ${res.captured} captured`)
+    : "";
   $("shotBadge").textContent = res.total || "";
 
   $("galleryGrid").innerHTML = res.items.length ? res.items.map(item => {
@@ -650,11 +677,18 @@ async function loadGallery() {
         </div>
       </div></a>`;
   }).join("") : `<div class="empty" style="grid-column:1/-1">
-      <div class="big">◱</div>No screenshots yet.
-      <div style="margin-top:8px;font-size:12.5px">Run step 3 — "See what is
-      alive" — and the distinct applications are captured automatically.</div>
+      <div class="big">◱</div>${res.captured
+        ? "Nothing matches that filter."
+        : "No screenshots yet."}
+      <div style="margin-top:8px;font-size:12.5px">${res.captured
+        ? "Clear the search or pick another status above."
+        : `Run step 3 — "See what is alive" — and the distinct applications
+           are captured automatically.`}</div>
     </div>`;
 }
+
+$("gSort").onchange = loadGallery;
+$("gLimit").onchange = loadGallery;
 
 /* ── findings ───────────────────────────────────────────────────────────── */
 ["fSeverity", "fTriage"].forEach(id => $(id).onchange = loadFindings);
