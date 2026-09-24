@@ -352,8 +352,16 @@ Also on by default:
   private, because someone testing an internal range still does not want a
   scanner wandering into the instance metadata service.
 
-At the end of a run the framework reports how many requests went to each host.
-If a programme manager ever asks, you have the number.
+At the end of a run the framework reports how many requests went to each host,
+and how many were refused and to where. If a programme manager ever asks, you
+have the number.
+
+Refusals are counted rather than repeated: the first one for a host is logged
+in full, the rest are tallied, and the host is mentioned again at 10, 100 and
+1000. The structured events are never dropped, so the totals stay exact. The
+headless browser is also launched with its own background networking turned
+off — component updates, Safe Browsing and the rest would otherwise generate
+hundreds of correctly-refused requests to Google on every screenshot run.
 
 ---
 
@@ -381,6 +389,7 @@ does less.
 bbhunter/
   scope.py       the decision engine — the safety-critical part
   doctor.py      runs each tool for real and reports what works
+  quiet.py       keeps abandoned DNS failures out of the terminal
   proxy.py       the egress gate, rate limiter and header injector
   store.py       SQLite: assets that persist, observations per run
   runner.py      subprocess supervision, process-group kill, watchdogs
@@ -410,6 +419,7 @@ python3 tests/test_proxy.py  # the gate, under real sockets
 python3 tests/test_store_runner.py
 python3 tests/test_updater.py  # what counts as a local change
 python3 tests/test_screenshots.py
+python3 tests/test_noise.py
 ```
 
 The full selftest is **56 checks**, including one screenshot genuinely captured
