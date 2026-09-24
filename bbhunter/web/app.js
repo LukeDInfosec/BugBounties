@@ -915,15 +915,22 @@ $("checkUpdate").onclick = async () => {
   $("updateOut").innerHTML = '<div class="hint">Checking…</div>';
   const u = await api("/api/update/check");
   $("applyUpdate").style.display = u.update_available ? "" : "none";
+  /* The version number is not the question — a fortnight of fixes can land
+     without it changing. What is shown is how many commits behind you are. */
+  const behind = u.behind || 0;
   $("updateOut").innerHTML = `
     <div class="kv">
       <span class="k">Installed</span><span class="v">${esc(u.current)}</span>
-      <span class="k">Latest</span><span class="v">${esc(u.latest || "unknown")}</span>
+      <span class="k">Published</span><span class="v">${esc(u.latest || "unknown")}</span>
+      <span class="k">Behind</span><span class="v">${behind
+        ? `${behind} commit${behind === 1 ? "" : "s"}` : "nothing"}</span>
     </div>
-    ${u.message ? `<div class="note warn">${esc(u.message)}</div>` : ""}
-    ${u.update_available ? `<div class="note"><b>An update is available.</b>
+    ${u.message ? `<div class="note ${u.dirty ? "warn" : ""}">${esc(u.message)}</div>` : ""}
+    ${u.update_available ? `<div class="note"><b>${behind
+        ? `${behind} commit${behind === 1 ? "" : "s"} to pull.`
+        : "An update is available."}</b>
       ${u.changes ? `<pre>${esc(u.changes)}</pre>` : ""}</div>`
-      : (u.latest && !u.message ? '<div class="note">You are on the latest version.</div>' : "")}`;
+      : (!u.message ? '<div class="note">Up to date with origin/main.</div>' : "")}`;
 };
 
 $("applyUpdate").onclick = async () => {
