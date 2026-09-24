@@ -114,6 +114,35 @@ def main():
         check("no 'could not reach GitHub'",
               "Could not" in (info["message"] or ""), False)
 
+        print("\n\033[1mCommits land without the version changing\033[0m")
+        # The case Luke hit: eight commits of fixes, VERSION untouched, and the
+        # page said "you are on the latest version".
+        seed = Path(tmp) / "seed"
+        (seed / "VERSION").write_text("0.9.9\n")          # same as the remote
+        (seed / "newfile.txt").write_text("a fix that did not bump VERSION\n")
+        git("add", "-A", cwd=seed)
+        git("-c", "core.fileMode=false", "commit", "-m", "a fix", cwd=seed)
+        git("push", "origin", "main", cwd=seed)
+        # The local checkout reports the same version as the remote, so only
+        # the commit count can reveal the difference. Patched rather than
+        # written to the file, because editing the working tree would make the
+        # checkout dirty and updates are blocked then — correctly, but that is
+        # a different test.
+        import bbhunter.config as _cfg
+        original_version = _cfg.version
+        _cfg.version = lambda: "0.9.9"
+        try:
+            info = asyncio.run(updater.check())
+            check("the version numbers agree", info["latest"], info["current"])
+            check("but it knows it is behind", info["behind"] >= 1)
+            check("so an update is still offered", info["update_available"])
+            check("and it says the version did not change",
+                  "version number unchanged" in (info["message"] or ""))
+            check("the missing commits are listed",
+                  "a fix" in (info.get("changes") or ""))
+        finally:
+            _cfg.version = original_version
+
         print("\n\033[1mWhen neither way works\033[0m")
         git("remote", "set-url", "origin", str(Path(tmp) / "gone"), cwd=work)
         info = asyncio.run(updater.check())
