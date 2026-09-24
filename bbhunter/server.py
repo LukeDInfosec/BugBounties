@@ -317,22 +317,42 @@ def create_app():
 
     # ── screenshots ───────────────────────────────────────────────────────
 
+    #: The buckets the gallery can be filtered by, in the order they are shown.
+    #: Chosen for triage rather than for tidiness: 401/403 is where the
+    #: interesting things hide, and a wall of 404s is worth hiding in one click.
+    GALLERY_BUCKETS = (
+        ("200", "200 OK", lambda s: s == 200),
+        ("2xx", "Other 2xx", lambda s: s is not None and 200 < s < 300),
+        ("3xx", "Redirects", lambda s: s is not None and 300 <= s < 400),
+        ("auth", "401 / 403", lambda s: s in (401, 403)),
+        ("404", "404", lambda s: s == 404),
+        ("4xx", "Other 4xx", lambda s: s is not None and 400 <= s < 500
+                                       and s not in (401, 403, 404)),
+        ("5xx", "5xx", lambda s: s is not None and s >= 500),
+        ("none", "No response", lambda s: s is None),
+    )
+
     @app.get("/api/programs/{program_id}/gallery")
-    async def gallery(program_id: int, search: str = "", limit: int = 400):
-        """The captured applications, newest run first.
+    async def gallery(program_id: int, search: str = "", limit: int = 120,
+                      status: str = "", sort: str = "recent"):
+        """The captured applications, filtered and counted.
 
         Deduplicated on the way out: if the same URL was captured in several
         runs, only the most recent image is listed, because a gallery of the
         same page four times is not a gallery.
+
+        The counts are computed over everything that matches the search, not
+        over the page being returned — a filter that says "200 (3)" when there
+        are eighty would be worse than no filter at all.
         """
         rows = store.assets(program_id, "screenshot", search=search,
-                            limit=limit, order="recent")
-        items = []
+                            limit=100000, order="recent")
+        captured = []
         for row in rows:
             data = row.get("data") or {}
             if not data.get("image"):
                 continue
-            items.append({
+            captured.append({
                 "url": row["key"],
                 "title": data.get("title") or "",
                 "status": data.get("status"),
@@ -342,7 +362,32 @@ def create_app():
                          f"{data.get('run_id')}/{data.get('image')}",
                 "last_seen": row.get("last_seen_at"),
             })
-        return {"items": items, "total": store.count_assets(program_id, "screenshot")}
+
+        buckets = [{"key": key, "label": label,
+                    "count": sum(1 for c in captured if match(c["status"]))}
+                   for key, label, match in GALLERY_BUCKETS]
+
+        chosen = dict((k, m) for k, _l, m in GALLERY_BUCKETS).get(status)
+        matching = [c for c in captured if chosen(c["status"])] if chosen \
+            else list(captured)
+
+        if sort == "status":
+            matching.sort(key=lambda c: (c["status"] is None, c["status"] or 0,
+                                         c["url"]))
+        elif sort == "url":
+            matching.sort(key=lambda c: c["url"])
+        elif sort == "title":
+            matching.sort(key=lambda c: (not c["title"], c["title"].lower()))
+
+        limit = max(1, min(int(limit or 120), 2000))
+        return {
+            "items": matching[:limit],
+            "shown": min(len(matching), limit),
+            "matching": len(matching),
+            "captured": len(captured),
+            "buckets": buckets,
+            "total": store.count_assets(program_id, "screenshot"),
+        }
 
     @app.get("/api/programs/{program_id}/shot/{run_id}/{name}")
     async def shot(program_id: int, run_id: int, name: str):
