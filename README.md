@@ -253,6 +253,13 @@ are looking at pictures of the estate rather than a list of four thousand
 hostnames, so the login portal nobody remembers deploying stands out
 immediately.
 
+Across the top: a search box, a **status filter** with live counts —
+`All 412 · 200 OK 96 · Redirects 31 · 401/403 8 · 404 240 · 5xx 3` — a sort
+(newest, status, URL, title) and how many cards to render. The counts are
+computed over everything the search matched, not over the page on screen, so
+`401/403 8` means eight in the programme. One click hides two hundred 404s and
+leaves the things worth looking at.
+
 Capture needs **a browser on the machine** — `sudo apt install -y chromium`,
 which `install.sh` now does for you. This is not optional: httpx and gowitness
 both embed go-rod, which downloads its own Chromium on first use and fails on
@@ -425,6 +432,7 @@ python3 tests/test_store_runner.py
 python3 tests/test_updater.py  # what counts as a local change
 python3 tests/test_screenshots.py
 python3 tests/test_noise.py
+python3 tests/test_gallery.py
 ```
 
 The full selftest is **56 checks**, including one screenshot genuinely captured
