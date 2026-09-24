@@ -176,7 +176,10 @@ is always clear what has happened and what comes next:
 
 Each step shows its stages as chips with the count each produced, turns green
 as it completes, and has its own **Run this step** button — so when you change
-one thing you redo that part rather than the whole chain.
+one thing you redo that part rather than the whole chain. A single step starts
+from the previous run's results: each run has its own directory, so what one
+stage leaves for the next is carried over, and the log names what was inherited
+and from which run.
 
 Four profiles decide which stages are in the chain to begin with:
 
@@ -220,6 +223,25 @@ so a screenshot taken in any theme is still readable in a report.
 
 Your choice is remembered in that browser and applied before the page paints,
 so a restart or an update never flashes the previous theme.
+
+### Checking the tools actually work
+
+Presence is not the same as working. httpx with no browser, nuclei with no
+templates and subfinder with no API keys all pass a version check and then
+quietly produce nothing.
+
+**Tools → Check they actually work**, or from a terminal:
+
+```bash
+./bbf --doctor              # runs each installed tool against a local target
+./bbf --doctor-online       # also the checks that need DNS or the internet
+./bbf --doctor --doctor-tool httpx --doctor-tool nuclei
+```
+
+The doctor starts a throwaway HTTP server on `127.0.0.1` and runs each tool
+against it for real — httpx must return parsed JSON with the page title, katana
+must find the linked script, nuclei must have templates and complete a scan,
+naabu must find a port that is open. Nothing is sent to any programme.
 
 ### 3. Results
 
@@ -309,7 +331,12 @@ first.
 ## Being a good citizen
 
 Defaults are deliberately conservative: **5 requests per second per host, 20
-combined, 10 concurrent connections**. Most programmes publish limits in that
+combined, 10 concurrent connections**. That limit governs what reaches the
+programme's servers. DNS goes to a resolver and passive enumeration goes to
+third-party APIs, so neither is throttled by it — `dns_rps` (default 300) and
+`source_rps` (default 0, meaning the tool's own pacing) are separate. Applying
+the per-host limit to DNS is not politeness, it is just a resolution stage that
+takes hours. Most programmes publish limits in that
 range, and a framework whose defaults get its user banned is not useful.
 
 Also on by default:
@@ -353,6 +380,7 @@ does less.
 ```
 bbhunter/
   scope.py       the decision engine — the safety-critical part
+  doctor.py      runs each tool for real and reports what works
   proxy.py       the egress gate, rate limiter and header injector
   store.py       SQLite: assets that persist, observations per run
   runner.py      subprocess supervision, process-group kill, watchdogs

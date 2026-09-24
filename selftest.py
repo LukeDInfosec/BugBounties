@@ -343,6 +343,58 @@ async def main(quick=False):
                     check("the image is not empty",
                           image_path.stat().st_size > 1000)
 
+    section("Running one step on its own")
+    # The failure this catches: a run gets its own directory, so a single step
+    # run by itself used to start with an empty one and skip with "nothing
+    # live" against a database full of live hosts.
+    partial_id = await engine.start(program, "standard", [], settings,
+                                    only_stages=["screenshots"])
+    deadline = time.monotonic() + 180
+    while engine.current and time.monotonic() < deadline:
+        await asyncio.sleep(0.5)
+    check("the single-step run finished", engine.current is None)
+    partial_stages = store.stages(partial_id)
+    check("only that step ran", len(partial_stages), 1)
+    if partial_stages:
+        one = partial_stages[0]
+        check("it did not skip for want of the previous step's output",
+              "no live hosts" in (one["message"] or ""), False)
+        check("it produced something", one["produced"] >= 1, True, fatal=False)
+    inherited = [d["text"] for k, d in events
+                 if k == "log" and "starts from the previous run" in d.get("text", "")]
+    check("the log says what it inherited", len(inherited) >= 1, True, fatal=False)
+
+    section("Every kind of scope rule seeds what it can")
+    from bbhunter.scope import Scope as _Scope
+    from bbhunter.pipeline import SeedStage as _Seed
+    rules = _Scope.from_lines(
+        include_text=("*.wild.example\n"
+                      "https://admin.url.example/app/\n"
+                      "bare.example\n"
+                      "45.33.32.0/24\n"
+                      "api-*.edge.glob.example\n"
+                      "re:^api\\d+\\.rx\\.example$"),
+        exclude_text="", seeds_text="")
+    seeded = [_Seed._host_from_rule(r) for r in rules.include]
+    check("a wildcard seeds its domain", "wild.example" in seeded)
+    check("a URL seeds its host", "admin.url.example" in seeded)
+    check("a bare domain seeds itself", "bare.example" in seeded)
+    check("a glob seeds its fixed part", "edge.glob.example" in seeded)
+    check("an address range seeds nothing", seeded[3], "")
+    check("a regular expression seeds nothing", seeded[5], "")
+
+    section("Rate limits apply to the right thing")
+    from bbhunter.pipeline import StageContext as _SC
+    probe_ctx = _SC(store=store, scope=None, proxy=None, registry=None,
+                    program_id=program["id"], run_id=run_id,
+                    workdir=Path(workdir), config={"per_host_rps": 5})
+    check("the target rate governs httpx", probe_ctx.rate_args("httpx"),
+          ["-rl", "5"])
+    check("DNS is not throttled to the target's rate",
+          probe_ctx.rate_args("dnsx"), ["-rl", "300"])
+    check("passive sources are left to their own pacing",
+          probe_ctx.rate_args("subfinder"), [])
+
     section("Gallery and per-step API")
     from fastapi.testclient import TestClient
     os.environ["BBHUNTER_HOME"] = workdir
