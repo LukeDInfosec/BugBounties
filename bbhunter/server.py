@@ -69,6 +69,19 @@ def create_app():
     if WEB.exists():
         app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
+    @app.on_event("startup")
+    async def _quieten():
+        """Abandoned DNS failures are counted, not printed over the interface.
+
+        Installed here rather than at import time because the handler belongs
+        to the running loop, and uvicorn makes its own.
+        """
+        import asyncio
+        from .quiet import install
+        install(asyncio.get_running_loop(),
+                say=lambda text: engine.bus.publish("log", {"text": text,
+                                                            "level": "info"}))
+
     # ── pages ─────────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)

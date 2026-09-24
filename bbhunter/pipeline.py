@@ -277,12 +277,43 @@ def query_signature(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}{path}" + ("?" + "&".join(names) if names else "")
 
 
+#: One pool for name lookups, sized so a wall of dead names cannot starve
+#: everything else that wants a thread.
+_DNS_POOL = None
+
+
+def _dns_pool():
+    global _DNS_POOL
+    if _DNS_POOL is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _DNS_POOL = ThreadPoolExecutor(max_workers=64,
+                                       thread_name_prefix="bbhunter-dns")
+    return _DNS_POOL
+
+
+def _blocking_lookup(name):
+    return sorted({info[4][0] for info in
+                   socket.getaddrinfo(name, None, proto=socket.IPPROTO_TCP)})
+
+
 async def _resolve_one(name, timeout=3.0):
+    """Resolve one name, or return [] — quietly, whatever goes wrong.
+
+    The shield-and-drain dance is the point. `getaddrinfo` is a blocking call
+    in a thread; cancelling the wait does not cancel the thread, so when the
+    lookup of a name that does not exist finally fails, its exception lands on
+    a future nobody is waiting for and asyncio prints "Future exception was
+    never retrieved" to the terminal. Enumerate a few thousand permutations
+    and the console fills with those instead of the scan. Retrieving the
+    exception in a done-callback is what makes it stop.
+    """
     loop = asyncio.get_running_loop()
+    future = loop.run_in_executor(_dns_pool(), _blocking_lookup, name)
     try:
-        infos = await asyncio.wait_for(
-            loop.getaddrinfo(name, None, proto=socket.IPPROTO_TCP), timeout=timeout)
-        return sorted({info[4][0] for info in infos})
+        return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
+    except asyncio.TimeoutError:
+        future.add_done_callback(lambda f: f.cancelled() or f.exception())
+        return []
     except Exception:
         return []
 
@@ -649,7 +680,9 @@ class WildcardStage(Stage):
         verdicts = {}
         for zone in sorted(zones):
             probes = [f"{random.randbytes(12).hex()}.{zone}" for _ in range(4)]
-            answers = await asyncio.gather(*[_resolve_one(p) for p in probes])
+            answers = await asyncio.gather(
+                *[_resolve_one(p) for p in probes], return_exceptions=True)
+            answers = [a for a in answers if isinstance(a, list)]
             resolving = [a for a in answers if a]
             if len(resolving) >= 3:
                 addresses = sorted({ip for a in resolving for ip in a})
@@ -711,7 +744,8 @@ class ResolveStage(Stage):
                     if addresses:
                         live[name] = {"a": addresses, "cname": None}
 
-            await asyncio.gather(*[one(n) for n in names])
+            await asyncio.gather(*[one(n) for n in names],
+                                 return_exceptions=True)
             command = "(built-in resolver)"
 
         phantoms = []
@@ -1561,6 +1595,8 @@ class ScreenshotStage(Stage):
                 "-ss", "-system-chrome", "-esb", "-ehb", "-silent", "-json",
                 "-srd", str(shots), "-t", "8", "-timeout", "20",
                 "-screenshot-timeout", "25"]
+        for flag in self.QUIET_CHROME:
+            argv += ["-ho", flag]
         argv += ctx.identification("httpx")
         result = await ctx.runner(ctx.workdir / "logs" / "screenshots.log",
                                   "httpx").run(
@@ -1580,6 +1616,32 @@ class ScreenshotStage(Stage):
             argv, timeout=ctx.config.get("stage_timeout", 2400), idle_timeout=420)
         return result.command
 
+    #: Chrome talks to Google before it talks to the target: component and
+    #: variations updates, Safe Browsing lists, the optimisation-hints service,
+    #: a network-connectivity probe. Every one of those hits the scope gate and
+    #: is correctly refused, which buries the run's real output under hundreds
+    #: of identical refusals for www.google.com. None of it is needed to take a
+    #: screenshot, so it is turned off at the browser rather than filtered from
+    #: the log.
+    QUIET_CHROME = (
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-client-side-phishing-detection",
+        "--disable-sync",
+        "--disable-domain-reliability",
+        "--safebrowsing-disable-auto-update",
+        "--disable-breakpad",
+        "--metrics-recording-only",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--no-pings",
+        "--disable-default-apps",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--disable-features=Translate,OptimizationHints,MediaRouter,"
+        "InterestFeedContentSuggestions,CalculateNativeWinOcclusion",
+    )
+
     async def _chrome(self, ctx, targets, shots, chrome):
         """Headless Chrome, one page at a time, through the scope proxy.
 
@@ -1598,6 +1660,7 @@ class ScreenshotStage(Stage):
                         "--hide-scrollbars", "--disable-dev-shm-usage",
                         "--virtual-time-budget=6000",
                         "--window-size=1280,800",
+                        *self.QUIET_CHROME,
                         f"--screenshot={out}"]
                 if ctx.proxy:
                     # Chrome has no per-request header flag, so identification

@@ -69,6 +69,55 @@ def _inherit_artefacts(data_dir: Path, program_id: int, run_id: int,
     return inherited
 
 
+class _RefusalLog:
+    """Collapses repeated scope refusals into something worth reading.
+
+    A headless browser checks for its own updates, asks Safe Browsing, fetches
+    fonts from a CDN and pulls half a dozen third-party assets off every page
+    it opens. All of that is correctly refused, and logging each one buries the
+    run's actual output under hundreds of identical lines.
+
+    So: the first refusal of a host is reported in full, the rest are counted,
+    and a host that keeps trying is mentioned again at 10, 100 and 1000 — the
+    count is the interesting part by then, not the line. The totals are always
+    exact, and ``summary()`` prints them at the end of the run.
+    """
+
+    MILESTONES = (10, 100, 1000, 10000)
+
+    def __init__(self, bus):
+        self.bus = bus
+        self.counts = {}
+
+    def event(self, kind, data):
+        host = data.get("host", "")
+        key = (data.get("method", ""), host, data.get("reason", ""))
+        seen = self.counts.get(key, 0) + 1
+        self.counts[key] = seen
+        # The structured event always goes out: the Assets page and the
+        # statistics are built from these, and they must not be lossy.
+        self.bus.publish(kind, {**data, "occurrence": seen, "muted": seen > 1})
+        if seen == 1:
+            self.bus.publish("log", {
+                "text": (f"gate refused {data.get('method') or 'GET'} {host} "
+                         f"— {data.get('reason', '')}"),
+                "level": "warn"})
+        elif seen in self.MILESTONES:
+            self.bus.publish("log", {
+                "text": (f"{host} has now been refused {seen} times "
+                         f"({data.get('reason', '')}). Further refusals of this "
+                         f"host are counted, not logged."),
+                "level": "warn"})
+
+    def summary(self):
+        """(total, [(host, count)]) — the exact numbers, however much was muted."""
+        per_host = {}
+        for (_method, host, _reason), count in self.counts.items():
+            per_host[host] = per_host.get(host, 0) + count
+        ranked = sorted(per_host.items(), key=lambda kv: -kv[1])
+        return sum(per_host.values()), ranked
+
+
 class EventBus:
     """Fans stage events out to connected browsers without letting a slow
     browser slow the scan down.
@@ -281,8 +330,11 @@ class ScanEngine:
         if config.get("allow_methods"):
             policy.allowed_methods = set(config["allow_methods"])
 
+        blocked = _RefusalLog(self.bus)
         self._proxy = ScopeProxy(scope, policy,
-                                 on_event=lambda k, d: self.bus.publish(k, d))
+                                 on_event=lambda k, d: (blocked.event(k, d)
+                                                        if k == "blocked"
+                                                        else self.bus.publish(k, d)))
         await self._proxy.start()
         self.bus.publish("run_started", {
             "run_id": run_id, "program": program["name"],
@@ -424,6 +476,18 @@ class ScanEngine:
                                  f"{h} ({v['requests']})" for h, v in busiest)
                                 if busiest else "")),
                     "level": "info"})
+                total_refused, ranked = blocked.summary()
+                if total_refused:
+                    self.bus.publish("log", {
+                        "text": (f"{total_refused} request(s) refused across "
+                                 f"{len(ranked)} host(s): "
+                                 + ", ".join(f"{host} ({count})"
+                                             for host, count in ranked[:6])
+                                 + ("…" if len(ranked) > 6 else "")
+                                 + ". Out-of-scope requests made by a page or "
+                                 "by the browser itself are expected; none of "
+                                 "them left the machine."),
+                        "level": "info"})
             self._proxy = None
             # A run where every stage skipped is the confusing one: the log
             # scrolls past, the counters stay at zero, and nothing says why.
