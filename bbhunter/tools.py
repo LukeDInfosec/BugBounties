@@ -38,6 +38,12 @@ class Tool:
     header_flag: str = ""          # e.g. "-H"; empty when unsupported
     header_style: str = "name: value"
     rate_flag: str = ""            # e.g. "-rl"
+    #: What the rate flag actually throttles. The programme's requests-per-
+    #: second limit protects the *target*, so applying it to a DNS resolver or
+    #: to a passive source is not politeness, it is just slow: at the default
+    #: 5/s, resolving a few thousand names takes hours and queries the
+    #: programme's servers not at all.
+    rate_scope: str = "target"     # target | dns | source
     proxy_flag: str = ""           # e.g. "-proxy"
     optional: bool = True
     notes: str = ""
@@ -75,7 +81,8 @@ TOOLS = {
         "subfinder", ("subfinder",),
         "Passive subdomain enumeration across dozens of sources",
         "go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
-        version_args=("-version",), rate_flag="-rl", optional=False,
+        version_args=("-version",), rate_flag="-rl", rate_scope="source",
+        optional=False,
         notes="API keys live in ~/.config/subfinder/provider-config.yaml"),
     "chaos": Tool(
         "chaos", ("chaos",),
@@ -106,7 +113,7 @@ TOOLS = {
         "dnsx", ("dnsx",),
         "DNS resolution, record enrichment and wildcard filtering",
         "go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
-        rate_flag="-rl", optional=False),
+        rate_flag="-rl", rate_scope="dns", optional=False),
     "puredns": Tool(
         "puredns", ("puredns",),
         "Mass resolution with wildcard detection and trusted re-validation",

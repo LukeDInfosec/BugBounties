@@ -103,6 +103,23 @@ def create_app():
         await engine.detect_tools()
         return engine.registry.summary()
 
+    @app.post("/api/tools/doctor")
+    async def tools_doctor(body: dict | None = None):
+        """Run each installed tool for real and report what actually works.
+
+        Presence and a version string are not the same as working: httpx with
+        no browser, nuclei with no templates and subfinder with no API keys all
+        pass a version check and then quietly produce nothing.
+        """
+        from .doctor import run_doctor
+        online = bool((body or {}).get("online"))
+        if engine.current:
+            raise HTTPException(409, "a scan is running; the doctor starts its "
+                                     "own target and tools, so wait for it to "
+                                     "finish")
+        rows, summary = await run_doctor(online=online)
+        return {"rows": rows, "summary": summary, "online": online}
+
     @app.get("/api/settings")
     async def get_settings():
         settings = cfg.load_config()

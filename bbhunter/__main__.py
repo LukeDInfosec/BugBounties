@@ -69,6 +69,15 @@ def main(argv=None):
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--scope-check", nargs=2, metavar=("PROGRAMME", "ASSET"),
                         help="Print the scope decision for one asset and exit.")
+    parser.add_argument("--doctor", action="store_true",
+                        help="Run every installed tool for real against a "
+                             "throwaway local target and report what actually "
+                             "works, then exit.")
+    parser.add_argument("--doctor-online", action="store_true",
+                        help="With --doctor, also run the checks that need "
+                             "DNS or the internet.")
+    parser.add_argument("--doctor-tool", action="append", metavar="TOOL",
+                        help="With --doctor, check only these tools.")
     args = parser.parse_args(argv)
 
     if args.version:
@@ -77,6 +86,13 @@ def main(argv=None):
 
     if args.scope_check:
         return _scope_check(*args.scope_check)
+
+    if args.doctor or args.doctor_online:
+        from .doctor import run_doctor, print_report
+        online = bool(args.doctor_online)
+        rows, summary = asyncio.run(run_doctor(online=online,
+                                               only=args.doctor_tool))
+        return print_report(rows, summary, online)
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(f"[!] Binding to {args.host} exposes an interface that can start "

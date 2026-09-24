@@ -196,16 +196,52 @@ class StageContext:
         return tool.header_args(headers, self.config.get("user_agent", ""))
 
     def rate_args(self, tool_key):
+        """The rate flag for a tool, from the limit that actually applies to it.
+
+        A programme's requests-per-second is a limit on what reaches *its*
+        servers. A DNS resolver and a passive source are not its servers, and
+        throttling those to 5/s only made DNS resolution take hours.
+        """
         tool = TOOLS.get(tool_key)
         if not tool or not tool.rate_flag:
             return []
-        rps = self.config.get("per_host_rps", 5)
-        return [tool.rate_flag, str(max(1, int(rps)))]
+        if tool.rate_scope == "dns":
+            rps = self.config.get("dns_rps", 300)
+        elif tool.rate_scope == "source":
+            rps = self.config.get("source_rps", 0)
+        else:
+            rps = self.config.get("per_host_rps", 5)
+        try:
+            rps = int(float(rps))
+        except (TypeError, ValueError):
+            rps = 0
+        if rps <= 0:
+            return []                       # unlimited: let the tool decide
+        return [tool.rate_flag, str(rps)]
 
     def write_list(self, name, items):
         path = self.workdir / name
         path.write_text("\n".join(items) + ("\n" if items else ""), encoding="utf-8")
         return path
+
+    def live_urls(self):
+        """The live HTTP services, deduplicated if a dedupe has happened.
+
+        Three sources, in order: this run's ``distinct.txt``, this run's
+        ``live.txt``, and failing both, the stored http_service assets. The
+        last one matters: a run gets its own directory, so a single step run
+        on its own has neither file, and before this every later step reported
+        "nothing live" against a database full of live hosts.
+        """
+        for name in ("distinct.txt", "live.txt"):
+            path = self.workdir / name
+            if path.is_file():
+                items = [l.strip() for l in
+                         path.read_text(errors="replace").splitlines() if l.strip()]
+                if items:
+                    return items
+        return [a["key"] for a in
+                self.store.assets(self.program_id, "http_service", limit=100000)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -414,10 +450,25 @@ class SeedStage(Stage):
             host = normalise_host(seed)
             if host:
                 seeds.append(host)
+
+        unusable = []
         for rule in ctx.scope.include:
-            host = normalise_host(rule.value)
-            if host and host not in seeds:
-                seeds.append(host)
+            host = self._host_from_rule(rule)
+            if host:
+                if host not in seeds:
+                    seeds.append(host)
+            else:
+                unusable.append(rule.value)
+        if unusable:
+            # An address range or an anchored regular expression is a perfectly
+            # good boundary and a useless starting point: there is no name to
+            # enumerate from. Saying so beats a run that quietly starts from
+            # fewer roots than the scope appears to contain.
+            ctx.log(f"{len(unusable)} scope rule(s) cannot seed enumeration "
+                    f"(no domain to start from): "
+                    + ", ".join(unusable[:5])
+                    + ". They still admit anything discovered another way.",
+                    "warn")
 
         allowed, observed, denied = ctx.scope.partition(seeds)
         if denied:
@@ -429,6 +480,33 @@ class SeedStage(Stage):
         ctx.log(f"{len(allowed)} root domain(s) in scope: {', '.join(allowed[:8])}"
                 + (" …" if len(allowed) > 8 else ""))
         return {"roots": allowed, "produced": len(allowed)}
+
+    @staticmethod
+    def _host_from_rule(rule):
+        """The name to start enumerating from, for each kind of scope rule.
+
+        A bare domain gives itself. A URL gives its host — which is the case
+        that used to be dropped: paste a programme's scope as a list of URLs
+        and enumeration started from nothing at all. A glob gives the part of
+        the name that is fixed, so `api-*.edge.acme.com` starts from
+        `edge.acme.com`. A CIDR or a regular expression gives nothing, and the
+        caller says so rather than pretending otherwise.
+        """
+        value = (rule.value or "").strip()
+        kind = getattr(rule.kind, "name", str(rule.kind)).upper()
+        if kind == "URL":
+            host = urlsplit(value if "//" in value else "//" + value).hostname
+            return normalise_host(host or "")
+        if kind == "GLOB":
+            labels = value.split(".")
+            while labels and "*" in labels[0]:
+                labels.pop(0)
+            fixed = ".".join(labels)
+            # One label left is a public suffix, not a target.
+            return normalise_host(fixed) if fixed.count(".") >= 1 else ""
+        if kind in ("CIDR", "REGEX", "IP"):
+            return ""
+        return normalise_host(value)
 
 
 class SubdomainStage(Stage):
@@ -674,7 +752,7 @@ class ProbeStage(Stage):
                  if resolved.exists() else ctx.store.asset_keys(ctx.program_id, "subdomain"))
         names = ctx.scope.filter_allowed(names)      # the input gate
         if not names:
-            return {"produced": 0, "skipped": "nothing resolved to probe"}
+            return {"produced": 0, "skipped": 'nothing resolved to probe. Run Step 2 (Discover) first, or add the hosts you already know as seeds on the Scope page.'}
         if not ctx.registry.have("httpx"):
             ctx.log("httpx is not installed — probing with the built-in prober. "
                     "Install httpx for technology detection, CDN identification "
@@ -767,7 +845,7 @@ class DedupeStage(Stage):
     async def run(self, ctx):
         services = ctx.store.assets(ctx.program_id, "http_service", limit=100000)
         if not services:
-            return {"produced": 0, "skipped": "nothing probed"}
+            return {"produced": 0, "skipped": 'no live hosts to work from. Run Step 3 (See what is alive) first — on its own is fine, it starts from the previous run.'}
 
         clusters = {}
         for service in services:
@@ -807,7 +885,7 @@ class PortStage(Stage):
         names = ctx.scope.filter_allowed(
             ctx.store.asset_keys(ctx.program_id, "subdomain"))
         if not names:
-            return {"produced": 0, "skipped": "nothing to scan"}
+            return {"produced": 0, "skipped": 'no live hosts to work from. Run Step 3 (See what is alive) first — on its own is fine, it starts from the previous run.'}
 
         source = ctx.write_list("port_targets.txt", names)
         argv = [ctx.registry.path("naabu"), "-list", str(source),
@@ -841,12 +919,9 @@ class UrlStage(_BuiltinCrawlMixin, Stage):
     description = "Archives and an active crawl, collapsed to distinct endpoint shapes."
 
     async def run(self, ctx):
-        distinct = ctx.workdir / "distinct.txt"
-        live = ctx.workdir / "live.txt"
-        source_file = distinct if distinct.exists() else live
-        if not source_file.exists():
-            return {"produced": 0, "skipped": "nothing live to crawl"}
-        targets = [l.strip() for l in source_file.read_text().splitlines() if l.strip()]
+        targets = ctx.live_urls()
+        if not targets:
+            return {"produced": 0, "skipped": 'no live hosts to work from. Run Step 3 (See what is alive) first — on its own is fine, it starts from the previous run.'}
         targets = ctx.scope.filter_allowed(targets)
         if not targets:
             return {"produced": 0, "skipped": "nothing in scope to crawl"}
@@ -1008,11 +1083,9 @@ class JsStage(Stage):
                    "secrets and exposed source maps.")
 
     async def run(self, ctx):
-        live_file = ctx.workdir / "distinct.txt"
-        if not live_file.exists():
-            live_file = ctx.workdir / "live.txt"
-        if not live_file.exists():
-            return {"produced": 0, "skipped": "nothing live"}
+        live_targets = ctx.live_urls()
+        if not live_targets:
+            return {"produced": 0, "skipped": 'no live hosts to work from. Run Step 3 (See what is alive) first — on its own is fine, it starts from the previous run.'}
 
         urls_file = ctx.workdir / "urls.txt"
         js_urls = set()
@@ -1023,7 +1096,7 @@ class JsStage(Stage):
                     js_urls.add(line)
 
         if ctx.registry.have("subjs"):
-            targets = [l.strip() for l in live_file.read_text().splitlines() if l.strip()]
+            targets = live_targets
             argv = [ctx.registry.path("subjs")]
             result = await ctx.runner(ctx.workdir / "logs" / "subjs.log", "subjs").run(
                 argv, timeout=600, idle_timeout=180,
@@ -1200,14 +1273,11 @@ class NucleiStage(Stage):
     async def run(self, ctx):
         if not ctx.registry.have("nuclei"):
             return {"produced": 0, "skipped": "nuclei is not installed"}
-        source_file = ctx.workdir / "distinct.txt"
-        if not source_file.exists():
-            source_file = ctx.workdir / "live.txt"
-        if not source_file.exists():
-            return {"produced": 0, "skipped": "nothing live to scan"}
+        live_targets = ctx.live_urls()
+        if not live_targets:
+            return {"produced": 0, "skipped": 'no live hosts to work from. Run Step 3 (See what is alive) first — on its own is fine, it starts from the previous run.'}
 
-        targets = ctx.scope.filter_allowed(
-            [l.strip() for l in source_file.read_text().splitlines() if l.strip()])
+        targets = ctx.scope.filter_allowed(live_targets)
         if not targets:
             return {"produced": 0, "skipped": "nothing in scope"}
         target_file = ctx.write_list("nuclei_targets.txt", targets)
@@ -1393,14 +1463,11 @@ class ScreenshotStage(Stage):
         "in Settings to its full path instead.")
 
     async def run(self, ctx):
-        source = ctx.workdir / "distinct.txt"
-        if not source.exists():
-            source = ctx.workdir / "live.txt"
-        if not source.exists():
-            return {"produced": 0, "skipped": "nothing probed yet"}
+        live_targets = ctx.live_urls()
+        if not live_targets:
+            return {"produced": 0, "skipped": 'no live hosts to work from. Run Step 3 (See what is alive) first — on its own is fine, it starts from the previous run.'}
 
-        targets = ctx.scope.filter_allowed(
-            [l.strip() for l in source.read_text().splitlines() if l.strip()])
+        targets = ctx.scope.filter_allowed(live_targets)
         if not targets:
             return {"produced": 0, "skipped": "nothing in scope to capture"}
 

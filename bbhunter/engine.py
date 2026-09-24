@@ -16,6 +16,59 @@ from .scope import Scope
 from .tools import ToolRegistry
 
 
+#: What one stage leaves behind for the next. A run gets its own directory, so
+#: running a single step on its own would otherwise start with an empty one and
+#: every later stage would skip with "nothing probed yet" — which is exactly
+#: what "Run this step" looked like before these were carried over.
+ARTEFACTS = ("resolved.txt", "live.txt", "distinct.txt", "bodies.json",
+             "urls.txt", "parameterised.txt", "candidates_xss.txt",
+             "permutations.txt")
+
+
+def _inherit_artefacts(data_dir: Path, program_id: int, run_id: int,
+                       workdir: Path):
+    """Copy each stage-to-stage file from the most recent run that has it.
+
+    Newest first, and per file rather than per run: if the last run was itself
+    a single step, the file it did not produce is taken from the run before.
+    Returns [(name, lines, source_run_id)] so the run can say what it started
+    from — inheriting silently would be worse than not inheriting at all.
+    """
+    import shutil
+
+    runs = data_dir / "runs"
+    if not runs.is_dir():
+        return []
+    previous = []
+    for path in runs.iterdir():
+        if not path.is_dir() or not path.name.startswith(f"{program_id}-"):
+            continue
+        try:
+            other = int(path.name.split("-", 1)[1])
+        except ValueError:
+            continue
+        if other != run_id:
+            previous.append((other, path))
+    previous.sort(reverse=True)
+
+    inherited = []
+    for name in ARTEFACTS:
+        for other_id, path in previous:
+            source = path / name
+            if not source.is_file() or source.stat().st_size == 0:
+                continue
+            shutil.copy2(source, workdir / name)
+            try:
+                lines = sum(1 for line in
+                            source.read_text(errors="replace").splitlines()
+                            if line.strip())
+            except OSError:
+                lines = 0
+            inherited.append((name, lines, other_id))
+            break
+    return inherited
+
+
 class EventBus:
     """Fans stage events out to connected browsers without letting a slow
     browser slow the scan down.
@@ -187,6 +240,10 @@ class ScanEngine:
                                        {"stages": stage_keys, **config})
         workdir = self.data_dir / "runs" / f"{program['id']}-{run_id}"
         (workdir / "logs").mkdir(parents=True, exist_ok=True)
+        inherited = []
+        if only_stages:
+            inherited = _inherit_artefacts(self.data_dir, program["id"],
+                                           run_id, workdir)
 
         self.current = {
             "run_id": run_id, "program_id": program["id"],
@@ -199,7 +256,8 @@ class ScanEngine:
             "partial": bool(only_stages),
         }
         self._task = asyncio.create_task(
-            self._run(program, scope, stage_keys, config, run_id, workdir, resume))
+            self._run(program, scope, stage_keys, config, run_id, workdir,
+                      resume, inherited))
         return run_id
 
     async def cancel(self):
@@ -211,7 +269,8 @@ class ScanEngine:
                 pass
         return True
 
-    async def _run(self, program, scope, stage_keys, config, run_id, workdir, resume):
+    async def _run(self, program, scope, stage_keys, config, run_id, workdir,
+                   resume, inherited=()):
         policy = RatePolicy(
             per_host_rps=float(config.get("per_host_rps", 5)),
             per_host_concurrency=int(config.get("per_host_concurrency", 10)),
@@ -237,10 +296,24 @@ class ScanEngine:
                      f"scope is refused there, not just filtered from the "
                      f"input list."),
             "level": "info"})
+        if inherited:
+            summary = ", ".join(f"{name} ({lines}) from run {src}"
+                                for name, lines, src in inherited)
+            self.bus.publish("log", {
+                "text": f"Running one step on its own, so it starts from the "
+                        f"previous run's results: {summary}.",
+                "level": "info"})
+        elif getattr(self, "current", None) and self.current.get("partial"):
+            self.bus.publish("log", {
+                "text": ("Running one step on its own, but no earlier run of "
+                         "this programme left any results to start from. Run "
+                         "the steps before it first, or run the whole chain."),
+                "level": "warn"})
 
         status = "completed"
         note = ""
         findings_total = 0
+        skipped_stages = []
 
         try:
             await self.registry.detect()
@@ -321,6 +394,7 @@ class ScanEngine:
                     "message": skipped or "",
                 })
                 if skipped:
+                    skipped_stages.append((stage.name, skipped))
                     self.bus.publish("log", {
                         "text": f"{stage.name} skipped — {skipped}", "level": "warn"})
 
@@ -351,6 +425,16 @@ class ScanEngine:
                                 if busiest else "")),
                     "level": "info"})
             self._proxy = None
+            # A run where every stage skipped is the confusing one: the log
+            # scrolls past, the counters stay at zero, and nothing says why.
+            if skipped_stages:
+                worst = "; ".join(f"{name}: {why}"
+                                  for name, why in skipped_stages[:4])
+                level = "warn" if len(skipped_stages) < len(stage_keys) else "error"
+                self.bus.publish("log", {
+                    "text": (f"{len(skipped_stages)} of {len(stage_keys)} step(s) "
+                             f"did no work. {worst}"),
+                    "level": level})
             diff = self.store.diff(program["id"], run_id)
             self.bus.publish("run_finished", {
                 "run_id": run_id, "status": status, "note": note,

@@ -44,6 +44,13 @@ DEFAULTS = {
     "per_host_rps": 5,
     "global_rps": 20,
     "per_host_concurrency": 10,
+    #: DNS goes to a resolver, not to the programme's servers, so it is not
+    #: governed by the programme's rate limit. At the per-host default of 5/s
+    #: resolving a few thousand names took hours and sent the target nothing.
+    "dns_rps": 300,
+    #: Passive sources (subfinder's APIs) are third parties with their own
+    #: limits. 0 means "no flag": let the tool use its own per-source pacing.
+    "source_rps": 0,
     "user_agent": "",
     "headers": {},
     "handle": "envy93",
