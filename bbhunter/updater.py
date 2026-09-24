@@ -140,12 +140,43 @@ async def check() -> dict:
             info["message"] = info["message"] or _lookup_failed(git_err, http_err)
             return info
 
+    # The version number is a poor question to ask. A fortnight of fixes can
+    # land without VERSION changing, and "you are on the latest version" while
+    # sitting eight commits behind is worse than saying nothing. What matters
+    # is whether the remote branch has commits this checkout does not.
+    info["behind"] = await _commits_behind()
     info["update_available"] = bool(
-        info["latest"] and info["latest"] != current and not info["dirty"])
+        not info["dirty"]
+        and (info["behind"] > 0
+             or (info["latest"] and info["latest"] != current)))
+
     if info["update_available"]:
-        code, log = await _git("log", "--oneline", "-15", f"HEAD..origin/main")
+        code, log = await _git("log", "--oneline", "-15", "HEAD..origin/main")
         info["changes"] = log if code == 0 else ""
+        if info["behind"] and info["latest"] == current:
+            info["message"] = info["message"] or (
+                f"{info['behind']} commit(s) behind, with the version number "
+                f"unchanged at {current}. Fixes do not always come with a new "
+                f"version; the commits below are what you are missing.")
+    elif not info["dirty"] and info["behind"] == 0:
+        info["message"] = info["message"] or "Up to date with origin/main."
     return info
+
+
+async def _commits_behind() -> int:
+    """How many commits origin/main has that this checkout does not.
+
+    `_latest_from_git` has already fetched, so this reads what was just
+    brought down rather than going to the network again. Returns 0 when the
+    answer cannot be worked out — never a guess that invents an update.
+    """
+    code, out = await _git("rev-list", "--count", "HEAD..origin/main")
+    if code != 0:
+        return 0
+    try:
+        return int(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return 0
 
 
 async def apply() -> dict:
