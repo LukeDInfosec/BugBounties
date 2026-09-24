@@ -799,6 +799,43 @@ async function loadTools() {
 }
 
 $("refreshTools").onclick = loadTools;
+
+/* The doctor runs each installed tool for real against a throwaway server on
+   127.0.0.1. Presence and a version string are not the same as working. */
+$("runDoctor").onclick = async () => {
+  const button = $("runDoctor");
+  const online = $("doctorOnline").checked;
+  button.disabled = true;
+  button.textContent = "Running…";
+  $("doctorOut").innerHTML =
+    `<div class="note">Running each installed tool against a local target.
+     This takes a minute; nothing is sent to any programme.</div>`;
+  try {
+    const r = await api("/api/tools/doctor", { method: "POST", body: { online } });
+    const pill = { ok: "ok", warn: "medium", fail: "high", skip: "info" };
+    const label = { ok: "works", warn: "caveat", fail: "broken", skip: "not checked" };
+    $("doctorOut").innerHTML = `
+      <div class="note ${r.summary.fail ? "danger" : ""}">
+        <b>${r.summary.ok} working</b>, ${r.summary.warn} with caveats,
+        ${r.summary.fail} broken, ${r.summary.skip} not installed or not checked.
+        Browser found: <code>${esc(r.summary.chrome || "none")}</code>.
+        ${r.online ? "" : "Checks needing DNS or the internet were skipped."}
+      </div>
+      <table><tr><th>Tool</th><th>Result</th><th>What happened</th></tr>
+      ${r.rows.filter(row => row.status !== "skip" || row.optional === false)
+        .map(row => `<tr>
+          <td class="mono">${esc(row.key)}</td>
+          <td><span class="pill ${pill[row.status]}">${label[row.status]}</span></td>
+          <td style="color:var(--dim)">${esc(row.detail || "")}</td>
+        </tr>`).join("")}</table>`;
+  } catch (e) {
+    $("doctorOut").innerHTML =
+      `<div class="note danger"><b>The doctor could not run.</b> ${esc(e.message)}</div>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = "Check they actually work";
+  }
+};
 $("copyInstall").onclick = () => {
   const detail = S.tools?.detail || {};
   const text = Object.values(detail).filter(t => !t.installed)

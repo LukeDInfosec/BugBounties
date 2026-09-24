@@ -696,7 +696,12 @@ a:hover{text-decoration:underline}
         <div class="row" style="margin-bottom:14px">
           <button class="btn ghost sm" id="refreshTools">Re-detect</button>
           <button class="btn ghost sm" id="copyInstall">Copy install commands for what's missing</button>
+          <button class="btn sm" id="runDoctor">Check they actually work</button>
+          <label class="check" style="padding:0;margin-left:2px"
+                 title="Also run the checks that need DNS or the internet">
+            <input type="checkbox" id="doctorOnline"> online checks too</label>
         </div>
+        <div id="doctorOut"></div>
         <div id="toolsList"></div>
       </div>
     </div>
