@@ -293,6 +293,11 @@ credentials `git pull` uses, the version check uses. Anonymous HTTPS to
 not reachable; a private repo answers 404 there, which is reported as "probably
 private" rather than as a failure to reach GitHub.
 
+The Update page compares **commits, not version numbers**: it reports how many
+commits `origin/main` has that your checkout does not, and lists them. A
+fortnight of fixes can land without `VERSION` changing, and "you are on the
+latest version" while eight commits behind is worse than saying nothing.
+
 The **Update** page checks GitHub and pulls. It refuses to run if you have
 local modifications rather than discarding them, and your engagement database
 and configuration live outside the checkout, so an update never touches your
