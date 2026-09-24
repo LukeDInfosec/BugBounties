@@ -599,8 +599,23 @@ function addLog(text, level = "info") {
   const el = $("log");
   const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
   const time = new Date().toLocaleTimeString([], { hour12: false });
+
+  /* A line that repeats is counted in place rather than appended again. The
+     same message twenty times in a row tells you nothing the first one did
+     not, and it pushes the output you were reading off the top. */
+  const last = el.lastElementChild;
+  if (last && last.dataset.text === text && last.className === "l-" + level) {
+    const seen = (parseInt(last.dataset.count || "1", 10) || 1) + 1;
+    last.dataset.count = seen;
+    last.innerHTML = `<span class="t">${time}</span>${esc(text)}` +
+      `<span class="rep">×${seen}</span>`;
+    if (stick) el.scrollTop = el.scrollHeight;
+    return;
+  }
+
   const div = document.createElement("div");
   div.className = "l-" + level;
+  div.dataset.text = text;
   div.innerHTML = `<span class="t">${time}</span>${esc(text)}`;
   el.appendChild(div);
   while (el.childElementCount > 3000) el.removeChild(el.firstChild);
