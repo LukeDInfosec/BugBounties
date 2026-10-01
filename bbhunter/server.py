@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from pydantic import BaseModel
 
 from . import config as cfg
 from . import updater
+from . import xssrecon
 from .engine import ScanEngine, _scope_from_program
 from .pipeline import PRESETS, STAGES, ACTIVE_STAGES, PHASES, phase_for
 from .scope import Scope
@@ -52,6 +54,26 @@ class RunIn(BaseModel):
     overrides: dict = {}
     #: When set, only these stages run. Used by "re-run just this step".
     only_stages: list = []
+
+
+class XssReconIn(BaseModel):
+    """What the XSS Recon screen sends.
+
+    The HackerOne key is accepted here and used for the run. It is stored
+    only if ``save_key`` is set, and it is never echoed back to the browser —
+    ``/api/settings`` reports whether a key exists, not what it is.
+    """
+    profile: str = "dom-based"
+    hackerone_key: str = ""
+    bugcrowd_key: str = ""
+    save_key: bool = False
+    use_subdomains: bool = False
+    only_bounty: bool = False
+    program_limit: int = 25
+    target_limit: int = 300
+    per_wildcard: int = 25
+    concurrency: int = 12
+    urls: str = ""
 
 
 class TriageIn(BaseModel):
@@ -414,6 +436,119 @@ def create_app():
     @app.post("/api/update/apply")
     async def update_apply():
         return await updater.apply()
+
+    # ── XSS Recon ─────────────────────────────────────────────────────────
+    #
+    # Deliberately separate from the scan engine. This does not touch a
+    # programme's scope, does not write assets, and is not part of the chain —
+    # it is the step *before* choosing a programme, and tying it to one would
+    # put it in the wrong place in the workflow.
+
+    recon_state = {"task": None, "run": None, "results": [], "log": [],
+                   "started": 0, "finished": 0, "error": ""}
+
+    def _recon_emit(kind, payload):
+        if kind == "log":
+            recon_state["log"].append(payload)
+            del recon_state["log"][:-400]
+        elif kind == "result":
+            recon_state["results"].append(payload)
+        elif kind == "progress":
+            recon_state["progress"] = payload
+        engine.bus.publish("xssrecon", {"kind": kind, "data": payload})
+
+    @app.get("/api/xssrecon/status")
+    async def xssrecon_status():
+        task = recon_state["task"]
+        return {
+            "running": bool(task and not task.done()),
+            "results": sorted(recon_state["results"],
+                              key=lambda r: -r.get("score", 0)),
+            "log": recon_state["log"][-200:],
+            "progress": recon_state.get("progress") or {},
+            "error": recon_state["error"],
+            "started": recon_state["started"],
+            "finished": recon_state["finished"],
+            "key_url": xssrecon.HACKERONE_KEY_URL,
+            "bugcrowd_key_url": xssrecon.BUGCROWD_KEY_URL,
+        }
+
+    @app.post("/api/xssrecon/start")
+    async def xssrecon_start(payload: XssReconIn):
+        task = recon_state["task"]
+        if task and not task.done():
+            raise HTTPException(409, "XSS Recon is already running")
+
+        settings = cfg.load_config()
+        stored = (settings.get("api_keys") or {})
+        hackerone = payload.hackerone_key.strip() or stored.get("hackerone", "")
+        bugcrowd = payload.bugcrowd_key.strip() or stored.get("bugcrowd", "")
+        urls = [u.strip() for u in re.split(r"[\s,]+", payload.urls or "")
+                if u.strip()]
+        urls = [u if u.startswith(("http://", "https://")) else "https://" + u
+                for u in urls]
+        if not (hackerone or bugcrowd or urls):
+            raise HTTPException(
+                400, "Give a HackerOne or Bugcrowd API key, or paste target "
+                     "URLs to analyse a scope directly.")
+
+        if payload.save_key and (payload.hackerone_key or payload.bugcrowd_key):
+            keys = dict(stored)
+            if payload.hackerone_key.strip():
+                keys["hackerone"] = payload.hackerone_key.strip()
+            if payload.bugcrowd_key.strip():
+                keys["bugcrowd"] = payload.bugcrowd_key.strip()
+            cfg.save_config({**settings, "api_keys": keys})
+
+        options = xssrecon.ReconOptions(
+            profile=payload.profile,
+            hackerone_key=hackerone, bugcrowd_key=bugcrowd,
+            use_subdomains=payload.use_subdomains,
+            only_bounty=payload.only_bounty,
+            program_limit=max(1, min(payload.program_limit, 200)),
+            target_limit=max(1, min(payload.target_limit, 5000)),
+            per_wildcard=max(1, min(payload.per_wildcard, 200)),
+            concurrency=max(1, min(payload.concurrency, 40)),
+            scope_urls=urls)
+
+        recon_state.update({"results": [], "log": [], "error": "",
+                            "started": time.time(), "finished": 0,
+                            "progress": {}})
+        run = xssrecon.ReconRun(
+            options, emit=_recon_emit,
+            user_agent=settings.get("user_agent") or xssrecon.DEFAULT_UA)
+        recon_state["run"] = run
+
+        async def _go():
+            try:
+                await run.run()
+            except Exception as exc:                            # noqa: BLE001
+                recon_state["error"] = str(exc)
+                _recon_emit("log", {"text": str(exc), "level": "error"})
+            finally:
+                recon_state["finished"] = time.time()
+                engine.bus.publish("xssrecon", {"kind": "done", "data": {}})
+
+        recon_state["task"] = asyncio.create_task(_go())
+        return {"started": True}
+
+    @app.post("/api/xssrecon/cancel")
+    async def xssrecon_cancel():
+        run = recon_state["run"]
+        if run:
+            run.cancel()
+        return {"cancelled": True}
+
+    @app.get("/api/xssrecon/export")
+    async def xssrecon_export():
+        run = recon_state["run"]
+        if not run:
+            raise HTTPException(404, "nothing to export")
+        return JSONResponse(
+            content=run.as_text(),
+            headers={"Content-Disposition":
+                     'attachment; filename="xss_recon.txt"'},
+            media_type="text/plain")
 
     # ── live stream ───────────────────────────────────────────────────────
 

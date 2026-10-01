@@ -70,7 +70,7 @@ PRESETS = {
                   "payloads are sent."),
         "stages": ["seeds", "subdomains", "wildcard", "resolve", "probe",
                    "dedupe", "screenshots", "urls", "params", "js",
-                   "takeover", "nuclei"],
+                   "takeover", "checks", "nuclei"],
         "active": False,
     },
     "deep": {
@@ -80,7 +80,7 @@ PRESETS = {
                   "and noisier; still sends no injection payloads."),
         "stages": ["seeds", "subdomains", "permute", "wildcard", "resolve",
                    "probe", "dedupe", "screenshots", "ports", "urls", "params",
-                   "js", "takeover", "nuclei"],
+                   "js", "takeover", "checks", "nuclei"],
         "active": False,
     },
     "monitor": {
@@ -89,7 +89,7 @@ PRESETS = {
                   "new since last time and check it. Skips the expensive "
                   "stages entirely."),
         "stages": ["seeds", "subdomains", "wildcard", "resolve", "probe",
-                   "dedupe", "takeover", "nuclei"],
+                   "dedupe", "takeover", "checks", "nuclei"],
         "active": False,
     },
 }
@@ -97,6 +97,10 @@ PRESETS = {
 #: Active probe stages. Each one sends payloads, so each is opt-in on its own
 #: and none of them is reachable without the run-level active acknowledgement.
 ACTIVE_STAGES = {
+    "inject": ("Built-in injection checks",
+               "Reflection with context analysis, open redirect, error and "
+               "boolean SQL injection, and path traversal — against every "
+               "parameter found. Needs nothing installed."),
     "dast": ("Fuzzing templates (XSS, SQLi, SSTI, LFI, open redirect)",
              "Sends injection payloads to every parameter found. This is the "
              "stage most likely to trip a WAF."),
@@ -140,7 +144,7 @@ PHASES = [
         "key": "test", "number": 5, "label": "Test",
         "blurb": ("Takeover triage and template scanning. Injection testing "
                   "only if you have turned it on."),
-        "stages": ["takeover", "nuclei", "dast", "xss"],
+        "stages": ["takeover", "checks", "nuclei", "inject", "dast", "xss"],
     },
 ]
 
@@ -993,10 +997,88 @@ class UrlStage(_BuiltinCrawlMixin, Stage):
             commands.append(result.command)
             ctx.log(f"katana crawled {len(urls) - before} URL(s)")
 
+        # ── The built-in sources ─────────────────────────────────────────
+        # These run whether or not katana and gau are installed, and they are
+        # the reason a fresh clone finds a real attack surface rather than a
+        # handful of anchor hrefs. The previous behaviour — fall back to a
+        # link-only crawl of 30 hosts, but only when both tools were missing —
+        # is what turned 1,500 live hosts into four parameters.
+        from . import discovery
+
+        fetcher = discovery.Fetcher(
+            concurrency=int(ctx.config.get("http_concurrency", 20)),
+            timeout=int(ctx.config.get("http_timeout", 12)),
+            proxy=ctx.proxy.url if ctx.proxy else None,
+            headers=dict(ctx.config.get("headers") or {}),
+            user_agent=ctx.config.get("user_agent") or discovery.DEFAULT_UA)
+        scope_ok = lambda u: ctx.scope.classify(u).allowed        # noqa: E731
+
+        if ctx.config.get("use_archives", True):
+            roots = ctx.store.asset_keys(ctx.program_id, "root")
+            if roots:
+                ctx.log(f"querying public archives for {len(roots)} root "
+                        f"domain(s) — nothing is sent to the target")
+                before = len(urls)
+                archived = await discovery.archive_urls(
+                    fetcher, roots[:40], log=lambda t: ctx.log(t))
+                urls |= archived
+                ctx.log(f"archives returned {len(urls) - before} URL(s)")
+
+        surface = discovery.Surface()
+        page_cap = int(ctx.config.get("crawl_page_cap", 600))
+        host_cap = int(ctx.config.get("crawl_host_cap", 400))
+        seeds = targets[:host_cap]
+        ctx.log(f"crawling {len(seeds)} host(s) for forms, scripts and "
+                f"endpoints")
+
+        async def _one(base):
+            try:
+                await discovery.crawl_page(fetcher, base, surface,
+                                           scope_ok=scope_ok)
+                extra = await discovery.robots_and_sitemap(fetcher, base)
+                for item in extra:
+                    if scope_ok(item):
+                        surface.urls.add(item)
+                spec = await discovery.openapi_surface(fetcher, base)
+                if spec:
+                    surface.openapi.append(spec["document"])
+                    surface.endpoints |= {e for e in spec["endpoints"]
+                                          if scope_ok(e)}
+                    for name in spec["parameters"]:
+                        surface.add_param(name, "openapi", spec["document"])
+                    ctx.log(f"  OpenAPI document at {spec['document']}: "
+                            f"{len(spec['endpoints'])} endpoint(s), "
+                            f"{len(spec['parameters'])} parameter(s)")
+            except Exception as exc:                            # noqa: BLE001
+                return
+
+        for start in range(0, len(seeds), 25):
+            if len(surface.urls) + len(urls) > page_cap * 60:
+                break
+            await asyncio.gather(*[_one(b) for b in seeds[start:start + 25]])
+
+        urls |= surface.urls
+        urls |= surface.endpoints
+        ctx.log(f"crawl found {len(surface.forms)} form(s), "
+                f"{len(surface.js_files)} script(s), "
+                f"{len(surface.endpoints)} endpoint(s)")
+
         if not urls:
-            ctx.log("neither katana nor gau is installed — crawling with the "
-                    "built-in crawler, which follows links only", "warn")
+            ctx.log("no URLs from archives or the crawl — falling back to the "
+                    "link-following crawler", "warn")
             urls |= await self._builtin_crawl(ctx, targets)
+
+        # Hand the surface to the parameter stage rather than making it
+        # re-derive everything from a flat URL list, which is what lost the
+        # form and JavaScript parameters last time.
+        ctx.write_list("forms.jsonl",
+                       [json.dumps(f.as_dict()) for f in surface.forms])
+        ctx.write_list("js_files.txt", sorted(surface.js_files))
+        ctx.write_list("endpoints.txt", sorted(surface.endpoints))
+        ctx.write_list("surface_params.jsonl", [
+            json.dumps({"name": v["name"], "sources": sorted(v["sources"]),
+                        "count": v["count"], "example": v["example"]})
+            for v in surface.parameters.values()])
 
         in_scope = [u for u in sorted(urls) if ctx.scope.classify(u).allowed]
 
@@ -1052,21 +1134,115 @@ class ParamStage(Stage):
     }
 
     async def run(self, ctx):
+        from . import discovery
+
         urls_file = ctx.workdir / "urls.txt"
         if not urls_file.exists():
             return {"produced": 0, "skipped": "no URLs discovered"}
         urls = [l.strip() for l in urls_file.read_text().splitlines() if l.strip()]
 
         params = {}
+
+        def record(name, source, example=""):
+            if not name or len(name) > 60:
+                return
+            entry = params.setdefault(name.lower(), {
+                "name": name, "count": 0, "example": example or "",
+                "classes": set(), "sources": set()})
+            entry["count"] += 1
+            entry["sources"].add(source)
+            if example and not entry["example"]:
+                entry["example"] = example
+
+        # 1. Query strings, from the crawl and from the archives.
         for url in urls:
             try:
                 parts = urlsplit(url)
             except Exception:
                 continue
             for name, value in parse_qsl(parts.query, keep_blank_values=True):
-                entry = params.setdefault(name.lower(), {
-                    "name": name, "count": 0, "example": url, "classes": set()})
-                entry["count"] += 1
+                record(name, "query", url)
+
+        # 2. Everything the crawl learned that a query-string parser cannot
+        #    see: form fields, named inputs, parameters read in JavaScript and
+        #    parameters declared in an OpenAPI document. This is where most of
+        #    a modern application's input surface actually lives, and omitting
+        #    it is what produced a four-parameter report from 1,500 hosts.
+        surface_file = ctx.workdir / "surface_params.jsonl"
+        if surface_file.exists():
+            for line in surface_file.read_text().splitlines():
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                for source in row.get("sources") or ["crawl"]:
+                    record(row["name"], source, row.get("example", ""))
+
+        # 3. Forms become testable URLs in their own right. A GET form is a
+        #    URL; a POST form is recorded so the operator can see it even
+        #    though the automated checks here only drive GET.
+        form_urls, post_forms = [], []
+        forms_file = ctx.workdir / "forms.jsonl"
+        if forms_file.exists():
+            for line in forms_file.read_text().splitlines():
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                form = discovery.Form(
+                    action=row.get("action", ""),
+                    method=row.get("method", "GET"),
+                    params={n: "" for n in row.get("params") or []})
+                as_url = form.as_url()
+                if as_url and ctx.scope.classify(as_url).allowed:
+                    form_urls.append(as_url)
+                elif form.method.upper() != "GET":
+                    post_forms.append(row)
+        if form_urls:
+            urls = sorted(set(urls) | set(form_urls))
+            ctx.log(f"{len(form_urls)} GET form(s) expressed as testable URLs")
+        if post_forms:
+            ctx.write_list("forms_post.jsonl",
+                           [json.dumps(f) for f in post_forms])
+            ctx.log(f"{len(post_forms)} POST form(s) recorded — drive these by "
+                    f"hand or through the proxy; the built-in checks send GET")
+
+        # 4. Brute force, last and only where it is worth it: endpoints that
+        #    answered and that carry no parameters we already know about.
+        if ctx.config.get("brute_parameters", True):
+            fetcher = discovery.Fetcher(
+                concurrency=int(ctx.config.get("http_concurrency", 20)),
+                timeout=int(ctx.config.get("http_timeout", 12)),
+                proxy=ctx.proxy.url if ctx.proxy else None,
+                headers=dict(ctx.config.get("headers") or {}),
+                user_agent=ctx.config.get("user_agent") or discovery.DEFAULT_UA)
+            bare = [u for u in urls if "?" not in u]
+            # One endpoint per shape: brute forcing /item/1 and /item/2 asks
+            # the same question twice.
+            by_shape = {}
+            for url in bare:
+                by_shape.setdefault(query_signature(url), url)
+            candidates = list(by_shape.values())[
+                :int(ctx.config.get("brute_endpoint_cap", 60))]
+            if candidates:
+                ctx.log(f"brute-forcing hidden parameters on "
+                        f"{len(candidates)} distinct endpoint(s)")
+                results = await asyncio.gather(*[
+                    discovery.brute_parameters(
+                        fetcher, url, log=lambda t: ctx.log(t))
+                    for url in candidates], return_exceptions=True)
+                hidden = 0
+                for url, result in zip(candidates, results):
+                    if isinstance(result, Exception) or not result:
+                        continue
+                    for row in result:
+                        record(row["name"], "brute-force", row["url"])
+                        urls.append(row["url"])
+                        hidden += 1
+                if hidden:
+                    ctx.log(f"{hidden} hidden parameter(s) found by brute force")
+        urls = sorted(set(urls))
+        ctx.write_list("urls.txt", urls)
 
         for name, entry in params.items():
             for bug_class, (label, needles) in self.INTERESTING.items():
@@ -1076,9 +1252,11 @@ class ParamStage(Stage):
         rows = []
         for name, entry in sorted(params.items(), key=lambda kv: -kv[1]["count"]):
             rows.append({
-                "key": name, "decision": "allow", "source": "urls",
+                "key": name, "decision": "allow",
+                "source": ",".join(sorted(entry.get("sources") or {"urls"})),
                 "data": {"occurrences": entry["count"],
-                         "example": entry["example"][:300],
+                         "example": (entry["example"] or "")[:300],
+                         "sources": sorted(entry.get("sources") or []),
                          "classes": sorted(entry["classes"])},
             })
         ctx.store.upsert_assets(ctx.program_id, ctx.run_id, "parameter", rows)
@@ -1099,8 +1277,36 @@ class ParamStage(Stage):
 
         for bug_class, found in candidates.items():
             ctx.write_list(f"candidates_{bug_class}.txt", sorted(found))
-        parameterised = sorted({u for s in candidates.values() for u in s})
-        ctx.write_list("parameterised.txt", parameterised)
+
+        # Every URL that takes input, not only the ones whose parameter name
+        # happens to be on a list. The name-matching above is a good way to
+        # *prioritise* — it says which bug class to look for first — and a
+        # terrible way to decide what gets tested at all: a reflected XSS in
+        # a parameter called "bannerId" is still a reflected XSS, and under
+        # the old rule it was never sent to a single check.
+        parameterised = sorted({
+            u for u in urls
+            if urlsplit(u).query and ctx.scope.classify(u).allowed})
+        # Shape-collapsed, so a thousand instances of /news?id=N are tested
+        # once rather than a thousand times.
+        by_shape = {}
+        for url in parameterised:
+            by_shape.setdefault(query_signature(url), url)
+        # One URL per shape on both halves. Without this a search page reached
+        # as ?q=x&category=y and as ?category=y&q=x is tested twice for the
+        # same bug, and on a real estate that doubling runs through the whole
+        # list.
+        prioritised = {}
+        for url in parameterised:
+            if any(url in found for found in candidates.values()):
+                prioritised.setdefault(query_signature(url), url)
+        testable = list(dict.fromkeys(
+            list(prioritised.values()) + list(by_shape.values())))
+        ctx.write_list("parameterised.txt", testable)
+        ctx.write_list("parameterised_all.txt", parameterised)
+        ctx.counter("parameterised_urls", len(testable))
+        ctx.log(f"{len(parameterised)} parameterised URL(s) collapse to "
+                f"{len(testable)} worth testing")
 
         ctx.counter("parameters", len(rows))
         ctx.log(f"{len(rows)} distinct parameter name(s) across {len(urls)} URL(s)")
@@ -1298,6 +1504,108 @@ class TakeoverStage(Stage):
 
         ctx.counter("takeover_candidates", confirmed)
         return {"produced": len(candidates), "dangling": confirmed}
+
+
+class _BuiltinChecksBase(Stage):
+    """Shared plumbing for the two built-in check stages.
+
+    They are two stages rather than one because the safety model here is
+    worth keeping honest. Asking for /.git/config and reading the response
+    headers is an ordinary GET of a path the server either serves or does
+    not; sending a quote into a parameter to see whether the database
+    complains is not. The first belongs in the default run, the second
+    belongs behind the active acknowledgement, and merging them would mean
+    either sending payloads by default or finding nothing by default. Both
+    have been tried; neither is acceptable.
+    """
+
+    check_names = ()
+
+    def _fetcher(self, ctx):
+        from . import discovery
+        return discovery.Fetcher(
+            concurrency=int(ctx.config.get("http_concurrency", 20)),
+            timeout=int(ctx.config.get("http_timeout", 12)),
+            proxy=ctx.proxy.url if ctx.proxy else None,
+            headers=dict(ctx.config.get("headers") or {}),
+            user_agent=ctx.config.get("user_agent") or discovery.DEFAULT_UA)
+
+    def _parameterised(self, ctx):
+        source = ctx.workdir / "parameterised.txt"
+        if not source.exists():
+            return []
+        return ctx.scope.filter_allowed(
+            [l.strip() for l in source.read_text().splitlines() if l.strip()])
+
+    async def _run_set(self, ctx, hosts, urls, host_cap, url_cap):
+        from . import checks as builtin
+        wanted = set(self.check_names)
+        configured = ctx.config.get("builtin_checks")
+        if configured:
+            wanted &= set(configured)
+        if not wanted:
+            return {"produced": 0, "skipped": "every check in this stage is "
+                                              "disabled in settings"}
+        found = await builtin.run_checks(
+            self._fetcher(ctx), hosts, urls,
+            scope_ok=lambda u: ctx.scope.classify(u).allowed,
+            log=lambda t, level="info": ctx.log(t, level),
+            enabled=sorted(wanted), host_cap=host_cap, url_cap=url_cap)
+        for row in found:
+            ctx.findings.append(row)
+        by_severity = {}
+        for row in found:
+            by_severity[row["severity"]] = by_severity.get(row["severity"], 0) + 1
+        if found:
+            ctx.log(f"{self.name}: " + ", ".join(
+                f"{count} {sev}" for sev, count in sorted(by_severity.items())))
+        else:
+            ctx.log(f"{self.name}: nothing. That is a result — the surface "
+                    f"above was tested and did not respond to any of these "
+                    f"checks.")
+        return {"produced": len(found), "by_severity": by_severity}
+
+
+class SafeChecksStage(_BuiltinChecksBase):
+    key, name = "checks", "Built-in checks (safe)"
+    description = ("Exposed files, security headers and CORS, with nothing "
+                   "installed. Ordinary GET requests; no payloads.")
+    check_names = ("exposed", "headers", "cors")
+
+    async def run(self, ctx):
+        hosts = ctx.scope.filter_allowed(ctx.live_urls())
+        if not hosts:
+            return {"produced": 0,
+                    "skipped": 'no live hosts to work from. Run Step 3 '
+                               '(See what is alive) first.'}
+        cap = int(ctx.config.get("checks_host_cap", 300))
+        ctx.log(f"checking {min(len(hosts), cap)} host(s) for exposed files, "
+                f"header policy and CORS")
+        result = await self._run_set(ctx, hosts, [], cap, 0)
+        ctx.counter("builtin_findings", result.get("produced", 0))
+        return result
+
+
+class InjectionChecksStage(_BuiltinChecksBase):
+    key, name = "inject", "Built-in injection checks"
+    description = ("Reflection, open redirect, SQL errors and traversal "
+                   "against discovered parameters. Active: this sends "
+                   "payloads.")
+    check_names = ("reflection", "redirect", "sqli", "traversal")
+
+    async def run(self, ctx):
+        urls = self._parameterised(ctx)
+        if not urls:
+            return {"produced": 0,
+                    "skipped": "no parameterised URLs. Run Step 4 (Explore "
+                               "the surface) first — if it found none, the "
+                               "run log for URL discovery says why."}
+        cap = int(ctx.config.get("checks_url_cap", 800))
+        ctx.log(f"testing {min(len(urls), cap)} parameterised URL(s) for "
+                f"reflection, open redirect, SQL errors and traversal")
+        result = await self._run_set(ctx, [], urls, 0, cap)
+        ctx.counter("injection_findings", result.get("produced", 0))
+        return result
 
 
 class NucleiStage(Stage):
@@ -1728,7 +2036,8 @@ class ScreenshotStage(Stage):
 STAGES = {s.key: s for s in [
     SeedStage(), SubdomainStage(), PermuteStage(), WildcardStage(), ResolveStage(),
     ProbeStage(), DedupeStage(), PortStage(), UrlStage(), ParamStage(), JsStage(),
-    TakeoverStage(), NucleiStage(), DastStage(), XssStage(), ScreenshotStage(),
+    TakeoverStage(), SafeChecksStage(), InjectionChecksStage(),
+    NucleiStage(), DastStage(), XssStage(), ScreenshotStage(),
 ]}
 
 

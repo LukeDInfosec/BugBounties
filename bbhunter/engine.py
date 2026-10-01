@@ -9,7 +9,7 @@ import time
 import traceback
 from pathlib import Path
 
-from .pipeline import (STAGES, PRESETS, PHASES, StageContext,
+from .pipeline import (STAGES, PRESETS, PHASES, ACTIVE_STAGES, StageContext,
                        resolve_stage_list, phase_for)
 from .proxy import ScopeProxy, RatePolicy
 from .scope import Scope
@@ -212,7 +212,7 @@ class ScanEngine:
                    "tool": STAGES[k].tool_key,
                    "installed": (not STAGES[k].tool_key
                                  or self.registry.have(STAGES[k].tool_key)),
-                   "active": k in ("dast", "xss")}
+                   "active": k in ACTIVE_STAGES}
                   for k in stage_keys if k in STAGES]
 
         missing = sorted({s["tool"] for s in stages
