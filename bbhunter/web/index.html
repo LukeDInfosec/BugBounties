@@ -297,6 +297,27 @@ td.mono,.mono{font-family:var(--mono);font-size:12px}
   letter-spacing:-1px;line-height:1.1}
 .counter .k{font-size:11px;color:var(--dim);margin-top:3px}
 
+button.tiny{padding:3px 9px;font-size:11.5px;border-radius:6px;margin-left:6px}
+.faint{color:var(--faint)}
+.console{
+  background:var(--sunken);border:1px solid var(--border);border-radius:var(--radius);
+  padding:13px 15px;font-family:var(--mono);font-size:11.5px;line-height:1.7;
+  overflow-y:auto;white-space:pre-wrap;word-break:break-word;margin:0;
+}
+.console .l-warn{color:var(--warn)}
+.console .l-error{color:var(--danger)}
+.console .l-ok{color:var(--ok)}
+/* XSS Recon result rows: the score is the index, the signals are the reason,
+   and the reason is what makes the score worth anything a week later. */
+.xr-row{border:1px solid var(--border);border-radius:var(--radius);
+  padding:12px 14px;margin-bottom:10px;background:var(--surface-2)}
+.xr-row .xr-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.xr-row .xr-score{font-family:var(--mono);font-weight:700;font-size:15px;
+  min-width:34px;text-align:right}
+.xr-row .xr-url{font-family:var(--mono);font-size:12.5px;word-break:break-all}
+.xr-row .xr-sig{color:var(--dim);font-size:11.5px;font-family:var(--mono);
+  margin-top:7px;line-height:1.65}
+.xr-row .xr-sig div{white-space:pre-wrap}
 #log{
   background:var(--sunken);border:1px solid var(--border);border-radius:var(--radius);
   padding:13px 15px;font-family:var(--mono);font-size:11.5px;line-height:1.7;
@@ -443,6 +464,7 @@ a:hover{text-decoration:underline}
     <div class="group">Workflow</div>
     <button data-page="scope" class="on"><span class="step">1</span> Scope</button>
     <button data-page="run"><span class="step">2</span> Run<span class="badge" id="runBadge"></span></button>
+    <button data-page="extras"><span class="step">+</span> Additional Tools<span class="badge" id="extrasBadge"></span></button>
     <div class="group">Results</div>
     <button data-page="gallery"><span class="step">◱</span> Gallery<span class="badge" id="shotBadge"></span></button>
     <button data-page="findings"><span class="step">!</span> Findings<span class="badge" id="findBadge"></span></button>
@@ -647,6 +669,98 @@ a:hover{text-decoration:underline}
           this is a gallery of things rather than four thousand copies of one
           404 page. Click any card to open it in a new tab.</p>
         <div id="galleryGrid"></div>
+      </div>
+    </div>
+
+
+    <!-- ── Additional Tools ──────────────────────────────────────────── -->
+    <div class="page" id="page-extras">
+      <div class="card">
+        <h3>XSS Recon</h3>
+        <p class="hint">Which programmes are worth a day of your time, before
+          you spend it. Reads the scopes you are allowed to test, fetches each
+          application's own JavaScript, and ranks what it finds against the
+          kind of cross-site scripting you are hunting. Nothing is sent to a
+          target beyond ordinary page and script requests — no payloads.</p>
+
+        <div class="grid2">
+          <div>
+            <label>What are you hunting?</label>
+            <select id="xrProfile">
+              <option value="dom-based">DOM-based XSS and prototype pollution</option>
+              <option value="reflected-stored">Reflected and stored XSS</option>
+            </select>
+            <p class="hint" id="xrProfileHint"></p>
+          </div>
+          <div>
+            <label>HackerOne API key</label>
+            <input id="xrH1Key" placeholder="identifier:token" autocomplete="off">
+            <p class="hint">Format is <code>identifier:token</code> — the
+              identifier is the <b>name you gave the token</b>, not your
+              username. Create one, copy both halves and paste them here:
+              <a href="https://hackerone.com/settings/api_token/edit"
+                 target="_blank" rel="noreferrer">hackerone.com/settings/api_token/edit</a>
+              <button class="btn ghost tiny" id="xrCopyH1Url">Copy link</button>
+            </p>
+          </div>
+          <div>
+            <label>Bugcrowd API key <span class="faint">(optional)</span></label>
+            <input id="xrBcKey" placeholder="token" autocomplete="off">
+            <p class="hint">
+              <a href="https://bugcrowd.com/user/edit/api_keys"
+                 target="_blank" rel="noreferrer">bugcrowd.com/user/edit/api_keys</a>
+              <button class="btn ghost tiny" id="xrCopyBcUrl">Copy link</button>
+            </p>
+          </div>
+          <div>
+            <label>Or paste targets directly</label>
+            <textarea id="xrUrls" rows="3"
+              placeholder="app.example.com&#10;https://portal.example.net"></textarea>
+            <p class="hint">One per line. With these set, no platform API is
+              called at all — useful for a scope you already have.</p>
+          </div>
+        </div>
+
+        <details style="margin-top:14px">
+          <summary>Limits</summary>
+          <div class="grid2" style="margin-top:12px">
+            <div><label>Programmes to read</label>
+              <input id="xrProgramLimit" type="number" value="25" min="1" max="200"></div>
+            <div><label>Targets to analyse</label>
+              <input id="xrTargetLimit" type="number" value="300" min="1" max="5000"></div>
+            <div><label>Subdomains per wildcard</label>
+              <input id="xrPerWildcard" type="number" value="25" min="1" max="200"></div>
+            <div><label>Concurrent requests</label>
+              <input id="xrConcurrency" type="number" value="12" min="1" max="40"></div>
+          </div>
+          <label class="check"><input type="checkbox" id="xrSubs">
+            Expand wildcards with certificate transparency</label>
+          <label class="check"><input type="checkbox" id="xrBounty">
+            Only programmes that pay bounties</label>
+          <label class="check"><input type="checkbox" id="xrSaveKey">
+            Remember these API keys on this machine</label>
+        </details>
+
+        <div class="row" style="margin-top:16px">
+          <button class="btn" id="xrStart">Run XSS Recon</button>
+          <button class="btn ghost" id="xrCancel" style="display:none">Stop</button>
+          <button class="btn ghost" id="xrExport">Export list</button>
+          <span class="mono" style="color:var(--faint);font-size:11.5px"
+            id="xrProgress"></span>
+        </div>
+      </div>
+
+      <div class="card" id="xrResultsCard" style="display:none">
+        <div class="row" style="margin-bottom:12px">
+          <h3 style="margin:0">Worth testing</h3>
+          <span class="pill" id="xrCount"></span>
+        </div>
+        <div id="xrResults"></div>
+      </div>
+
+      <div class="card">
+        <h3>Log</h3>
+        <pre class="console" id="xrLog" style="max-height:280px"></pre>
       </div>
     </div>
 

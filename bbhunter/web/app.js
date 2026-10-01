@@ -30,6 +30,7 @@ async function api(path, opts = {}) {
 const TITLES = {
   scope: ["Step 1 — Scope", "What may be touched, and what may never be"],
   run: ["Step 2 — Run", "Each step feeds the next; run the chain or one step"],
+  extras: ["Additional Tools", "Standalone tools that sit outside the chain"],
   gallery: ["Gallery", "What each distinct application looks like"],
   findings: ["Findings", "Triage state persists across runs"],
   assets: ["Assets", "Everything discovered, in scope and out"],
@@ -57,6 +58,7 @@ function show(page) {
   if (page === "diff") loadDiff();
   if (page === "tools") loadTools();
   if (page === "run") loadRuns();
+  if (page === "extras") loadXssRecon();
 }
 
 function modal(html) {
@@ -68,6 +70,7 @@ $("modal").onclick = (e) => { if (e.target.id === "modal") closeModal(); };
 
 /* ── boot ───────────────────────────────────────────────────────────────── */
 async function boot() {
+  xrBind();
   S.meta = await api("/api/meta");
   $("version").textContent = "v" + S.meta.version;
   $("railfoot").innerHTML =
@@ -995,3 +998,148 @@ boot().catch(e => {
     `<div style="padding:40px;font-family:system-ui"><h2>bbhunter failed to start</h2>
      <pre>${esc(e.message)}</pre></div>`;
 });
+
+
+/* ── Additional Tools: XSS Recon ─────────────────────────────────────────
+ *
+ * Deliberately not part of the scan chain. This is the step before picking a
+ * programme — it answers "where is a day of my time best spent", and the
+ * answer has to carry its reasoning or it is just a number.
+ */
+
+const XR_PROFILE_HINT = {
+  "dom-based":
+    "Looks for the application's own JavaScript and what is in it: " +
+    "innerHTML and eval beside location.hash and postMessage, recursive " +
+    "merges beside prototype access, and library versions with known " +
+    "sandbox escapes. A big custom bundle counts in a target's favour here.",
+  "reflected-stored":
+    "Looks for applications that build their HTML on the server. React, " +
+    "Vue, Angular and Svelte escape output by default, so a target built " +
+    "on one of them counts against itself for this kind of bug.",
+};
+
+let xrTimer = null;
+
+function xrProfileHint() {
+  $("xrProfileHint").textContent =
+    XR_PROFILE_HINT[$("xrProfile").value] || "";
+}
+
+async function loadXssRecon() {
+  xrProfileHint();
+  await xrRefresh();
+}
+
+async function xrRefresh() {
+  let state;
+  try { state = await api("/api/xssrecon/status"); }
+  catch (e) { return; }
+
+  $("xrStart").style.display = state.running ? "none" : "";
+  $("xrCancel").style.display = state.running ? "" : "none";
+
+  const p = state.progress || {};
+  if (state.running && p.total) {
+    $("xrProgress").textContent =
+      `${p.done} of ${p.total} — ${(p.current || "").slice(0, 70)}`;
+  } else if (state.error) {
+    $("xrProgress").textContent = state.error;
+  } else if (state.finished) {
+    $("xrProgress").textContent =
+      `finished — ${state.results.length} worth testing`;
+  } else {
+    $("xrProgress").textContent = "";
+  }
+
+  const log = $("xrLog");
+  log.innerHTML = (state.log || []).map(l =>
+    `<div class="l-${esc(l.level || "info")}">${esc(l.text || "")}</div>`
+  ).join("");
+  log.scrollTop = log.scrollHeight;
+
+  const results = state.results || [];
+  $("xrResultsCard").style.display = results.length ? "" : "none";
+  $("xrCount").textContent = `${results.length}`;
+  $("xrResults").innerHTML = results.map(r => {
+    const colour = r.score >= 75 ? "var(--danger)"
+                 : r.score >= 60 ? "var(--warn)" : "var(--ok)";
+    const signals = (r.signals || []).map(s =>
+      `<div>${esc(s)}</div>`).join("");
+    const prog = r.program_url
+      ? `<a href="${esc(r.program_url)}" target="_blank" rel="noreferrer">${esc(r.program || r.program_url)}</a>`
+      : "";
+    return `<div class="xr-row">
+      <div class="xr-head">
+        <span class="xr-score" style="color:${colour}">${r.score}</span>
+        <a class="xr-url" href="${esc(r.url)}" target="_blank" rel="noreferrer">${esc(r.url)}</a>
+        <span class="right faint">${prog}</span>
+      </div>
+      <div class="xr-sig">${signals}</div>
+    </div>`;
+  }).join("");
+
+  if (state.running && !xrTimer) {
+    xrTimer = setInterval(xrRefresh, 1500);
+  } else if (!state.running && xrTimer) {
+    clearInterval(xrTimer); xrTimer = null;
+  }
+}
+
+function xrBind() {
+  if (!$("xrStart")) return;
+  $("xrProfile").onchange = xrProfileHint;
+
+  const copy = (text, btn) => {
+    navigator.clipboard.writeText(text).then(() => {
+      const was = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = was; }, 1500);
+    });
+  };
+  $("xrCopyH1Url").onclick = (e) => {
+    e.preventDefault();
+    copy("https://hackerone.com/settings/api_token/edit", e.target);
+  };
+  $("xrCopyBcUrl").onclick = (e) => {
+    e.preventDefault();
+    copy("https://bugcrowd.com/user/edit/api_keys", e.target);
+  };
+
+  $("xrStart").onclick = async () => {
+    $("xrStart").disabled = true;
+    try {
+      await api("/api/xssrecon/start", {
+        profile: $("xrProfile").value,
+        hackerone_key: $("xrH1Key").value.trim(),
+        bugcrowd_key: $("xrBcKey").value.trim(),
+        save_key: $("xrSaveKey").checked,
+        use_subdomains: $("xrSubs").checked,
+        only_bounty: $("xrBounty").checked,
+        program_limit: +$("xrProgramLimit").value || 25,
+        target_limit: +$("xrTargetLimit").value || 300,
+        per_wildcard: +$("xrPerWildcard").value || 25,
+        concurrency: +$("xrConcurrency").value || 12,
+        urls: $("xrUrls").value,
+      });
+      // The key has been used; do not leave it sitting in the DOM.
+      if (!$("xrSaveKey").checked) {
+        $("xrH1Key").value = ""; $("xrBcKey").value = "";
+      }
+      await xrRefresh();
+    } catch (e) {
+      $("xrProgress").textContent = e.message || String(e);
+    } finally {
+      $("xrStart").disabled = false;
+    }
+  };
+
+  $("xrCancel").onclick = async () => {
+    await api("/api/xssrecon/cancel", {});
+    await xrRefresh();
+  };
+
+  $("xrExport").onclick = () => {
+    window.location = "/api/xssrecon/export";
+  };
+}
