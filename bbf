@@ -8,4 +8,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin:$HOME/.pdtm/go/bin:$HOME/.local/bin"
 cd "$HERE"
+
+# If install.sh had to fall back to a virtual environment, use it. Without
+# this the launcher runs the system python, does not find fastapi, and tells
+# the operator to install dependencies that are already installed.
+if [ -x "$HERE/.venv/bin/python3" ]; then
+    exec "$HERE/.venv/bin/python3" -m bbhunter "$@"
+fi
 exec python3 -m bbhunter "$@"

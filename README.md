@@ -100,6 +100,35 @@ tool, what it is for, and the exact command to install it.
 **Required for full capability:** `subfinder`, `dnsx`, `httpx`, `nuclei`.
 Everything else degrades gracefully.
 
+### A note on Python packages, and on Kali
+
+`install.sh` puts the four interface packages into a virtual environment at
+`.venv`, and `./bbf` picks it up on its own. There is nothing to activate.
+
+That is deliberate rather than tidy-mindedness. Kali ships dozens of Python
+security tools sharing one `site-packages`, pinned hard against each other —
+theHarvester alone pins `fastapi` and `uvicorn` to exact versions. Installing
+anything with `pip --break-system-packages` lets pip satisfy your request by
+uninstalling and replacing what is already there. A four-package requirements
+file was observed doing exactly that to `requests` on a working Kali box:
+
+```
+Attempting uninstall: requests
+  Found existing installation: requests 2.27.1
+  Uninstalling requests-2.27.1:
+    Successfully uninstalled requests-2.27.1
+```
+
+Every tool on that machine pinned below 2.34 is now running against a version
+nobody tested it with, and nothing says so afterwards. A venv cannot do that.
+
+If you are reading pip output from a Kali box and see a wall of
+`ERROR: ... which is incompatible` about faradaysec, netexec or theHarvester:
+those are usually pre-existing conflicts between Kali's own packages and have
+nothing to do with what you just installed. The line that tells you whether it
+worked is `Successfully installed`. The lines worth worrying about are any
+beginning `Uninstalling`.
+
 ### Running it
 
 ```bash
@@ -291,6 +320,60 @@ reporting four thousand removed subdomains teaches you to ignore the screen.
 
 ---
 
+## Additional Tools
+
+### XSS Recon
+
+Which programmes are worth a day of your time, *before* you spend it.
+
+It reads the scopes you are allowed to test — from the HackerOne or Bugcrowd
+API, or from a list you paste in — fetches each application's own JavaScript,
+and ranks what it finds against the kind of cross-site scripting you are
+hunting.
+
+**Reflected and stored** wants applications that render on the server. React,
+Vue, Angular and Svelte escape output by default, so a target built on one
+counts against itself here.
+
+**DOM-based** wants the opposite: a large bundle of the application's own
+code, with dangerous sinks (`innerHTML`, `eval`, `document.write`) beside
+untrusted sources (`location.hash`, `postMessage`, `URLSearchParams`),
+recursive merges beside prototype access, unguarded message handlers, and
+library versions with published sandbox escapes.
+
+Every result carries the signals that produced its score:
+
+```
+88  https://portal.example.com
+    +10  no Content-Security-Policy
+    +3   1 application bundle(s)
+    +4   sinks: innerHTML
+    +9   sources: URLSearchParams, location.hash, location.search
+    +12  both a dangerous sink and an untrusted source present
+    +14  jQuery 3.4.1 — htmlPrefilter allows XSS via crafted HTML
+```
+
+A bare number cannot be checked or argued with a week later. The list can.
+
+The HackerOne key is `identifier:token`, and the identifier is the **name you
+gave the token**, not your username — that mix-up is the usual cause of a 401.
+The page links straight to where to create one.
+
+Nothing is sent to a target beyond ordinary page and script requests. No
+payloads.
+
+**There is no requirements.txt for it.** The version this replaces needed
+`requests`, `selenium`, `webdriver-manager` and `wakepy`, and downloaded a
+matching ChromeDriver at runtime. The entire browser stack bought one thing:
+a check for whether `__webpack_require__.m` is reachable at runtime — which
+is visible in the bundle text the tool already downloads and reads. So it was
+replaced with a regex over content that was being fetched anyway, and the
+dependency list went to zero. `discovery.py`, `checks.py` and `xssrecon.py`
+import nothing outside the standard library, and a test asserts it so it
+cannot drift back.
+
+---
+
 ## Updating
 
 The Update page reads the published version through **your own git remote**,
@@ -405,6 +488,9 @@ bbhunter/
   proxy.py       the egress gate, rate limiter and header injector
   store.py       SQLite: assets that persist, observations per run
   runner.py      subprocess supervision, process-group kill, watchdogs
+  discovery.py   archives, forms, JavaScript, sitemaps, parameter brute force
+  checks.py      the built-in checks — findings with nothing installed
+  xssrecon.py    Additional Tools: which programme is worth a day
   pipeline.py    the stages and what each is allowed to touch
   engine.py      run sequencing, live events, cancellation
   tools.py       tool registry, identity verification, install commands

@@ -81,6 +81,15 @@ go_install() {
     rm -f "$log"
 }
 
+warn_break_system() {
+    info ""
+    info "As a last resort you can install into the system or user site with:"
+    info "    python3 -m pip install --break-system-packages -r requirements.txt"
+    info "Do that only if you understand what it may change. On a Kali box"
+    info "full of pentest tooling it can uninstall a shared library that"
+    info "another tool depends on, and nothing will tell you afterwards."
+}
+
 pipx_install() {
     local binary="$1" spec="$2" purpose="$3"
     if have "$binary"; then
@@ -143,13 +152,36 @@ head2 "3. Python dependencies for the framework itself"
 if python3 -c "import fastapi, uvicorn" 2>/dev/null; then
     ok "fastapi and uvicorn already available"
 else
-    if python3 -m pip install -q --break-system-packages -r "$HERE/requirements.txt" 2>/dev/null \
-       || python3 -m pip install -q -r "$HERE/requirements.txt" 2>/dev/null; then
+    # A virtual environment FIRST, and --break-system-packages only if that
+    # is impossible.
+    #
+    # The order matters on exactly the machine this tool is built for. Kali
+    # ships dozens of Python pentest tools that share one site-packages and
+    # pin each other hard — theHarvester alone pins fastapi and uvicorn to
+    # exact versions. `pip install --break-system-packages` does what it
+    # says: it will happily uninstall a shared library and replace it to
+    # satisfy whatever you just asked for. A real install of a four-package
+    # requirements file was observed removing `requests` from a working Kali
+    # box, which leaves every other tool pinned below that version running
+    # on something it was never tested against, silently.
+    #
+    # A venv costs a few megabytes and cannot do that. The launcher picks it
+    # up automatically, so nothing downstream has to know.
+    if python3 -m venv "$HERE/.venv" >/dev/null 2>&1 \
+       && "$HERE/.venv/bin/pip" install -q -r "$HERE/requirements.txt" 2>/dev/null; then
+        ok "installed into a virtual environment at .venv"
+        info "Isolated from the system packages, so nothing else on this box moves."
+    elif python3 -c "import fastapi, uvicorn, pydantic, websockets" 2>/dev/null; then
+        ok "already available system-wide; nothing installed"
+    elif python3 -m pip install -q -r "$HERE/requirements.txt" 2>/dev/null; then
         ok "installed from requirements.txt"
     else
         FAILED_LIST+=("python dependencies")
-        bad "could not install Python dependencies"
-        info "Try: python3 -m pip install --break-system-packages -r requirements.txt"
+        bad "could not create a virtual environment or install the packages"
+        info "The four packages are fastapi, uvicorn, pydantic and websockets."
+        info "If python3-venv is missing:  sudo apt install -y python3-venv"
+        info "Then re-run ./install.sh"
+        warn_break_system
     fi
 fi
 have pipx || info "pipx missing — the Python-based tools below will be skipped"

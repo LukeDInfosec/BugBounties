@@ -1,4 +1,45 @@
+# Four packages, needed only for the web interface. Everything bbhunter
+# actually does — crawling, archive mining, form and JavaScript parsing,
+# parameter brute force, and every built-in check — is standard library.
+#
+# ─────────────────────────────────────────────────────────────────────────
+#  INSTALL THIS INTO A VIRTUAL ENVIRONMENT. ./install.sh does it for you.
+# ─────────────────────────────────────────────────────────────────────────
+#
+#     python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+#
+# The ./bbf launcher picks .venv up on its own, so there is nothing else to
+# do and nothing to activate.
+#
+# Why this matters more here than on a normal machine: Kali ships dozens of
+# Python security tools that share one site-packages and pin each other to
+# exact versions — theHarvester alone pins fastapi and uvicorn. Installing
+# with `pip --break-system-packages` lets pip satisfy this file by
+# uninstalling and replacing whatever is already there. That has been
+# observed removing `requests` from a working Kali box to install a newer
+# one, which leaves every tool pinned below that version running against
+# something it was never tested with, and nothing warns you afterwards.
+#
+# pip's resolver prints a wall of "ERROR: ... which is incompatible" about
+# those other tools when you do this. Those lines are usually pre-existing
+# conflicts between Kali's own packages rather than anything to do with this
+# file — the line that matters is whether pip says "Successfully installed",
+# and the lines that matter even more are any "Uninstalling ...".
+#
+# A virtual environment cannot do any of that. Use one.
+
 fastapi>=0.110
-uvicorn[standard]>=0.27
 pydantic>=2.5
 websockets>=12.0
+
+# uvicorn WITHOUT the [standard] extra. The extra pulls in uvloop, httptools
+# and watchfiles, which are C extensions, and none of them is needed: this
+# binds to loopback and serves one operator. Plain asyncio is far more than
+# fast enough, and it is three fewer things that can fail to build or clash
+# with a system package.
+uvicorn>=0.27
+
+# The external scanners (subfinder, httpx, nuclei, katana, dalfox …) are Go
+# binaries installed by install.sh into ~/go/bin. They are optional: the
+# framework finds things without them and finds more with them. They are
+# also why nothing here needs to touch the system Python at all.
